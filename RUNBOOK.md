@@ -39,6 +39,17 @@ node --version
 python -c "import requests; print(requests.__version__)"
 ```
 
+建议先在工作区根目录创建 `.account`（避免命令行明文密码）：
+
+```bash
+cat > .account <<'EOF'
+USERNAME=你的统一认证账号
+PASSWORD=你的统一认证密码
+EOF
+```
+
+说明：`scan/watch` 默认读取该文件；如同时传 `--username/--password`，则 CLI 参数优先。
+
 建议版本（已验证）：
 
 - Python 3.10+
@@ -61,8 +72,6 @@ python -m unittest discover -s tests -v
 
 ```bash
 python -m src.main scan \
-  --username <学号> \
-  --password '<统一认证密码>' \
   --teacher '王强' \
   --title '测试标题' \
   --center 83650 \
@@ -72,10 +81,24 @@ python -m src.main scan \
   --verbose
 ```
 
+仅保留“当前直播中”课程（可选）：
+
+```bash
+python -m src.main scan \
+  --teacher '王强' \
+  --title '测试标题' \
+  --center 83650 \
+  --radius 0 \
+  --require-live \
+  --live-check-timeout 30 \
+  --live-check-interval 2
+```
+
 成功标志：
 
 - 输出 JSON，`mode=scan`
 - `matches` 中出现目标课程时即命中
+- 开启 `--require-live` 后，失败候选会在 `live_check_failures` 返回，并在终端显示 `[LIVE-CHECK-FAIL]`
 
 ### 4.2 直播服务（watch）
 用途：持续拉取上游直播流并提供本地代理播放。
@@ -84,8 +107,6 @@ python -m src.main scan \
 
 ```bash
 python -m src.main watch \
-  --username <学号> \
-  --password '<统一认证密码>' \
   --course-id 83650 \
   --sub-id 1895397 \
   --host 127.0.0.1 \
@@ -95,6 +116,10 @@ python -m src.main watch \
   --asset-retries 3 \
   --stale-playlist-grace 15 \
   --hls-max-buffer 20 \
+  --record-dir ./records \
+  --record-segment-minutes 10 \
+  --record-startup-av-timeout 15 \
+  --record-recovery-window-sec 10 \
   --no-browser
 ```
 
@@ -115,6 +140,14 @@ python -m src.main watch \
 
 - 前台运行：`Ctrl + C`
 - 后台运行：`kill <PID>`
+
+录制文件说明：
+
+- 目录：`--record-dir` 不传则默认在当前工作目录创建会话文件夹。
+- 会话目录命名：`课程名_老师名_watch启动时间`
+- 分片命名：`课程名_老师名_开始时间_结束时间.mp4/.mp3`
+- 缺失区间日志：每分片 `*.missing.json`，全局 `recording_session_report.json`
+- `--record-segment-minutes 0` 表示整场只输出一个分片，直到手动终止。
 
 ### 4.3 本地浏览器访问（SSH 转发）
 在本地机器执行：
@@ -193,6 +226,19 @@ ssh clusters -L 8765:127.0.0.1:8765
 - 提高 `--playlist-retries`（如 5）
 - 适当调大 `--hls-max-buffer`（如 30）
 
+### 6.7 watch 启动即退出（录制检查失败）
+可能原因：
+
+- 未检测到同时包含音频+视频的教师流（超出 `--record-startup-av-timeout`）
+- `ffmpeg` 或 `ffprobe` 不在 PATH
+- 课程名/老师名元信息获取失败
+
+处理：
+
+- 检查本机 `ffmpeg -version` / `ffprobe -version`
+- 检查课程 `course_id` 是否正确
+- 适当增大 `--record-startup-av-timeout`（例如 20）
+
 ### 6.5 `Address already in use`
 原因：端口被占用。
 处理：
@@ -242,10 +288,10 @@ python -m src.main ...
 
 ```bash
 # 1) 扫描课程
-python -m src.main scan --username <u> --password '<p>' --teacher '王强' --title '测试标题' --center 83650 --radius 0 --workers 1 --retries 1 --verbose
+python -m src.main scan --teacher '王强' --title '测试标题' --center 83650 --radius 0 --workers 1 --retries 1 --verbose
 
 # 2) 启动直播代理
-python -m src.main watch --username <u> --password '<p>' --course-id 83650 --sub-id <sub_id> --poll-interval 3 --port 8765 --no-browser
+python -m src.main watch --course-id 83650 --sub-id <sub_id> --poll-interval 3 --port 8765 --no-browser
 
 # 3) 查看指标
 curl -s http://127.0.0.1:8765/api/metrics

@@ -19,6 +19,12 @@ dist/
 
 # Local logs
 *.log
+.account
+
+# Live recording outputs (default session folder naming: 课程_老师_YYYYMMDD_HHMMSS)
+*_*_20[0-9][0-9][0-1][0-9][0-3][0-9]_[0-2][0-9][0-5][0-9][0-5][0-9]/
+*.writing.mp4
+*.writing.mp3
 
 # Temporary reverse-engineering captures
 .tmp*

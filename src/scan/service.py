@@ -9,74 +9,13 @@ from typing import Optional
 import requests
 
 from src.auth.cas_client import ZJUAuthClient
-from src.common.constants import API_BASE
+from src.common.account import resolve_credentials
+from src.common.course_meta import (
+    course_teachers,
+    query_course_detail,
+)
 from src.common.http import get_thread_session
-
-
-def parse_course_data(raw: dict) -> Optional[dict]:
-    if raw.get("code") == 0 and isinstance(raw.get("data"), dict):
-        return raw["data"]
-    if (
-        raw.get("success")
-        and isinstance(raw.get("result"), dict)
-        and raw["result"].get("err") == 0
-        and isinstance(raw["result"].get("data"), dict)
-    ):
-        return raw["result"]["data"]
-    return None
-
-
-def course_teachers(course_data: dict) -> list[str]:
-    names: list[str] = []
-    if isinstance(course_data.get("teachers"), list):
-        for item in course_data["teachers"]:
-            if not isinstance(item, dict):
-                continue
-            realname = item.get("realname") or item.get("name")
-            if realname and realname not in names:
-                names.append(realname)
-
-    realname = course_data.get("realname")
-    if realname and realname not in names:
-        names.insert(0, realname)
-    return names
-
-
-def query_course_detail(
-    session: requests.Session,
-    token: str,
-    timeout: int,
-    course_id: int,
-    retries: int,
-) -> Optional[dict]:
-    headers = {"Accept-Language": "zh_cn"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    attempts = max(retries, 0) + 1
-    for _ in range(attempts):
-        try:
-            resp = session.get(
-                f"{API_BASE}/courseapi/v3/multi-search/get-course-detail",
-                params={"course_id": course_id},
-                headers=headers,
-                timeout=timeout,
-            )
-        except requests.RequestException:
-            continue
-
-        if resp.status_code != 200:
-            continue
-
-        try:
-            payload = resp.json()
-        except json.JSONDecodeError:
-            continue
-
-        return parse_course_data(payload)
-
-    return None
-
+from src.scan.live_check import check_course_live_status
 
 def query_course_worker(
     token: str,
@@ -90,14 +29,19 @@ def query_course_worker(
 
 
 def run_scan(args: argparse.Namespace) -> int:
+    username, password, cred_error = resolve_credentials(args.username, args.password)
+    if cred_error:
+        print(f"Credential error: {cred_error}", file=sys.stderr)
+        return 1
+
     auth = ZJUAuthClient(timeout=args.timeout, tenant_code=args.tenant_code)
     login_session = requests.Session()
 
     try:
         token = auth.login_and_get_token(
             session=login_session,
-            username=args.username,
-            password=args.password,
+            username=username,
+            password=password,
             center_course_id=args.center,
             authcode=args.authcode,
         )
@@ -112,8 +56,14 @@ def run_scan(args: argparse.Namespace) -> int:
     start_id = args.center - args.radius
     end_id = args.center + args.radius
     course_ids = list(range(start_id, end_id + 1))
+    require_live = bool(getattr(args, "require_live", False))
+    live_check_timeout = max(0.0, float(getattr(args, "live_check_timeout", 30.0)))
+    live_check_interval = max(0.0, float(getattr(args, "live_check_interval", 2.0)))
 
     found: list[dict] = []
+    matched_candidates: list[dict] = []
+    live_check_failures: list[dict] = []
+    live_checked_candidates = 0
     scanned = 0
 
     def handle_result(cid: int, data: Optional[dict]) -> None:
@@ -128,14 +78,21 @@ def run_scan(args: argparse.Namespace) -> int:
         teachers = course_teachers(data)
 
         if title == args.title and args.teacher in teachers:
-            print(f"[MATCH] course_id={cid} title={title} teachers={','.join(teachers)}")
-            found.append(
-                {
-                    "course_id": cid,
-                    "title": title,
-                    "teachers": teachers,
-                }
-            )
+            candidate = {
+                "course_id": cid,
+                "title": title,
+                "teachers": teachers,
+            }
+            if require_live:
+                matched_candidates.append(candidate)
+                if args.verbose:
+                    print(
+                        f"[CANDIDATE] course_id={cid} title={title} "
+                        f"teachers={','.join(teachers)} (pending live check)"
+                    )
+            else:
+                print(f"[MATCH] course_id={cid} title={title} teachers={','.join(teachers)}")
+                found.append(candidate)
         elif args.verbose:
             print(f"[{cid}] title={title} teachers={','.join(teachers)}")
 
@@ -158,6 +115,54 @@ def run_scan(args: argparse.Namespace) -> int:
                     result_cid, data = cid, None
                 handle_result(result_cid, data)
 
+    if require_live:
+        matched_candidates.sort(key=lambda x: x["course_id"])
+        live_session = requests.Session()
+        for candidate in matched_candidates:
+            live_checked_candidates += 1
+            live_result = check_course_live_status(
+                session=live_session,
+                token=token,
+                timeout=args.timeout,
+                tenant_code=args.tenant_code,
+                course_id=int(candidate["course_id"]),
+                max_wait_sec=live_check_timeout,
+                interval_sec=live_check_interval,
+            )
+            if live_result.checked and live_result.is_live:
+                print(
+                    f"[MATCH] course_id={candidate['course_id']} title={candidate['title']} "
+                    f"teachers={','.join(candidate['teachers'])} live=直播中"
+                )
+                found.append(candidate)
+                continue
+
+            if live_result.checked:
+                if args.verbose:
+                    print(
+                        f"[FILTERED-NOT-LIVE] course_id={candidate['course_id']} "
+                        f"title={candidate['title']} teachers={','.join(candidate['teachers'])}"
+                    )
+                continue
+
+            failure = {
+                "course_id": candidate["course_id"],
+                "title": candidate["title"],
+                "teacher": args.teacher,
+                "attempts": live_result.attempts,
+                "elapsed_sec": live_result.elapsed_sec,
+                "last_error": live_result.last_error,
+                "hint": live_result.hint,
+            }
+            live_check_failures.append(failure)
+            print(
+                f"[LIVE-CHECK-FAIL] course_id={candidate['course_id']} title={candidate['title']} "
+                f"teacher={args.teacher} attempts={live_result.attempts} "
+                f"elapsed_sec={live_result.elapsed_sec} last_error={live_result.last_error} "
+                f"hint={live_result.hint}",
+                file=sys.stderr,
+            )
+
     found.sort(key=lambda x: x["course_id"])
 
     print(
@@ -169,6 +174,11 @@ def run_scan(args: argparse.Namespace) -> int:
                 "scanned": scanned,
                 "teacher": args.teacher,
                 "title": args.title,
+                "require_live": require_live,
+                "live_check_timeout_sec": live_check_timeout,
+                "live_check_interval_sec": live_check_interval,
+                "live_checked_candidates": live_checked_candidates,
+                "live_check_failures": live_check_failures,
                 "matches": found,
             },
             ensure_ascii=False,

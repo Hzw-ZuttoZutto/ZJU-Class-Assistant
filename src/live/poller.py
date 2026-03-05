@@ -108,12 +108,12 @@ class StreamPoller:
             snapshot = self._fetch_once()
             self._set_snapshot(snapshot)
             self._stop_event.wait(self.poll_interval)
-
+    # 定时轮询上游接口
     def _fetch_once(self) -> WatchSnapshot:
         meta = self._meta_provider.fetch()
         provider_diag: dict[str, dict] = {"meta": self._provider_diag_dict(meta)}
 
-        # Keep previous behavior for hard network/json failure on the primary chain.
+        #如果meta是硬失败，直接返回失败快照
         if meta.result_err_msg == "http_error" and meta.error:
             return WatchSnapshot(
                 updated_at_utc=now_utc_iso(),
