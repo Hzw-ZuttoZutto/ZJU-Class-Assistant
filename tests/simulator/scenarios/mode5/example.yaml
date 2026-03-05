@@ -1,0 +1,19 @@
+mode: 5
+name: mode5_analysis_benchmark_demo
+seed: 7
+dataset:
+  include_glob: "*.mp3"
+feed:
+  mode: burst
+control:
+  translation:
+    rules: []
+  analysis:
+    rules: []
+history:
+  by_seq: []
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 2

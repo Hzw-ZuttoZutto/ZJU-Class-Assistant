@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from src.common.account import parse_account_file, resolve_credentials
+from src.common.account import parse_account_file, resolve_credentials, resolve_openai_api_key
 
 
 class AccountCredentialTests(unittest.TestCase):
@@ -41,6 +41,40 @@ class AccountCredentialTests(unittest.TestCase):
         self.assertEqual(username, "")
         self.assertEqual(password, "")
         self.assertIn("missing credentials", err)
+
+    def test_resolve_openai_api_key_from_account_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text("OPENAI_API_KEY=file_key\n", encoding="utf-8")
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {"OPENAI_API_KEY": "env_key"}, clear=True),
+            ):
+                key, err = resolve_openai_api_key()
+        self.assertEqual(key, "file_key")
+        self.assertEqual(err, "")
+
+    def test_resolve_openai_api_key_fallback_to_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {"OPENAI_API_KEY": "env_key"}, clear=True),
+            ):
+                key, err = resolve_openai_api_key()
+        self.assertEqual(key, "env_key")
+        self.assertEqual(err, "")
+
+    def test_resolve_openai_api_key_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                key, err = resolve_openai_api_key()
+        self.assertEqual(key, "")
+        self.assertIn("missing OpenAI API key", err)
 
 
 if __name__ == "__main__":

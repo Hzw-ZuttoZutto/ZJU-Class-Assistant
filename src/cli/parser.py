@@ -198,4 +198,81 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max seconds waiting for context gate; timeout falls back to partial context",
     )
 
+    simulate = subparsers.add_parser(
+        "simulate",
+        help="Run offline simulator for realtime insight pipeline with configurable scenarios",
+    )
+    simulate.add_argument("--mode", type=int, choices=[1, 2, 3, 4, 5], required=True, help="Simulator mode")
+    simulate.add_argument(
+        "--scenario-file",
+        required=True,
+        help="YAML scenario file path under tests/simulator/scenarios/modeX/",
+    )
+    simulate.add_argument(
+        "--sim-root",
+        default="tests/simulator",
+        help="Simulator root directory (contains mp3_inputs/scenarios/cache/runs)",
+    )
+    simulate.add_argument(
+        "--mp3-dir",
+        default="tests/simulator/mp3_inputs",
+        help="Directory containing prerecorded mp3 files for simulation",
+    )
+    simulate.add_argument(
+        "--run-dir",
+        default="tests/simulator/runs",
+        help="Directory where simulation run outputs are written",
+    )
+    simulate.add_argument(
+        "--chunk-seconds",
+        type=int,
+        default=10,
+        help="Target chunk duration seconds for preprocessing and feed scheduling",
+    )
+    simulate.add_argument(
+        "--precompute-workers",
+        type=int,
+        default=4,
+        help="Workers used by precompute stage for mode2/mode3",
+    )
+    simulate.add_argument(
+        "--rt-model",
+        default="gpt-5-mini",
+        help="OpenAI text model for analysis stage",
+    )
+    simulate.add_argument(
+        "--rt-stt-model",
+        default="gpt-4o-mini-transcribe",
+        help="OpenAI speech-to-text model for translation stage",
+    )
+    simulate.add_argument(
+        "--rt-keywords-file",
+        default="config/realtime_keywords.json",
+        help="Keyword config file path reused by analysis stage",
+    )
+    simulate.add_argument(
+        "--rt-request-timeout-sec",
+        type=float,
+        default=12.0,
+        help="Per-request timeout seconds for OpenAI stage calls",
+    )
+    simulate.add_argument(
+        "--rt-stage-timeout-sec",
+        type=float,
+        default=60.0,
+        help="Stage timeout seconds for transcript/analysis retries in simulated pipeline",
+    )
+    simulate.add_argument(
+        "--rt-retry-count",
+        type=int,
+        default=2,
+        help="Retry count for transcript/analysis stage calls",
+    )
+    simulate.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional seed overriding scenario seed for deterministic feed behavior",
+    )
+
     return parser

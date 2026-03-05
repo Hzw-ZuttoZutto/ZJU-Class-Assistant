@@ -4,6 +4,7 @@ from src.live.insight.models import (
     RealtimeInsightConfig,
     TranscriptChunk,
 )
+from src.live.insight.stage_processor import InsightStageProcessor
 from src.live.insight.service import RealtimeInsightService
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "KeywordConfig",
     "RealtimeInsightConfig",
     "TranscriptChunk",
+    "InsightStageProcessor",
     "RealtimeInsightService",
 ]

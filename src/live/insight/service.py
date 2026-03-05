@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -9,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from src.common.account import resolve_openai_api_key
 from src.live.insight.audio_chunker import RealtimeAudioChunker
 from src.live.insight.models import (
     InsightEvent,
@@ -18,6 +18,7 @@ from src.live.insight.models import (
     format_local_ts,
 )
 from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
+from src.live.insight.stage_processor import InsightStageProcessor
 
 
 class RealtimeInsightService:
@@ -57,6 +58,7 @@ class RealtimeInsightService:
         self._scheduled_chunks: set[str] = set()
         self._futures: dict[str, Future[None]] = {}
         self._max_written_chunk_seq = 0
+        self._stage_processor: InsightStageProcessor | None = None
 
         self._insight_jsonl_path = self.session_dir / "realtime_insights.jsonl"
         self._text_log_path = self.session_dir / "realtime_insights.log"
@@ -107,11 +109,10 @@ class RealtimeInsightService:
             self._log("[rt-insight] ffmpeg not found; disabling realtime insight")
             return False
         if self._client is None:
-            api_key = os.environ.get(self.config.api_key_env, "").strip()
+            api_key, key_error = resolve_openai_api_key(env_name=self.config.api_key_env)
             if not api_key:
                 self._log(
-                    f"[rt-insight] {self.config.api_key_env} is missing; "
-                    "realtime insight disabled"
+                    f"[rt-insight] {key_error}; realtime insight disabled"
                 )
                 return False
             try:
@@ -126,6 +127,14 @@ class RealtimeInsightService:
             "[rt-insight] started with "
             f"stt_model={self.config.stt_model}, analysis_model={self.config.model}, "
             f"chunk={self.config.chunk_seconds}s, max_concurrency={self.config.max_concurrency}"
+        )
+        self._stage_processor = InsightStageProcessor(
+            session_dir=self.session_dir,
+            config=self.config,
+            keywords=self._keywords,
+            client=self._client,
+            log_fn=self._log,
+            stop_event=self._stop_event,
         )
         return True
 
@@ -206,6 +215,10 @@ class RealtimeInsightService:
             self._reap_completed_tasks(block=True, timeout_sec=0.5)
 
     def _process_chunk_task(self, chunk_seq: int, chunk_path: Path) -> None:
+        if self._stage_processor is not None:
+            self._stage_processor.process_chunk(chunk_seq, chunk_path)
+            return
+
         now = datetime.now().astimezone()
         transcript_text, stt_status, stt_attempt, stt_error = self._transcribe_with_retry(chunk_path)
         transcript_chunk = TranscriptChunk(

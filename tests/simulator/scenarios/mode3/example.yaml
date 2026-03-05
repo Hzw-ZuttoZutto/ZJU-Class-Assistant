@@ -1,0 +1,36 @@
+mode: 3
+name: mode3_analysis_and_history_control_demo
+seed: 7
+mode3_variant: controlled_history
+dataset:
+  include_glob: "*.mp3"
+feed:
+  mode: jitter
+  jitter:
+    max_sec: 1.2
+control:
+  translation:
+    rules: []
+  analysis:
+    rules:
+      - seq: 3
+        status: timeout
+        delay_sec: 3.0
+      - seq: 5
+        status: ok
+        forced_result:
+          important: true
+          summary: "强制分析返回：当前内容为考试重点"
+          context_summary: "历史状态被手动控制"
+          matched_terms: ["考试", "重点"]
+          reason: "forced_result"
+history:
+  by_seq:
+    - seq: 4
+      visibility: "111111110011001100"
+      hold_sec: 20
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 1

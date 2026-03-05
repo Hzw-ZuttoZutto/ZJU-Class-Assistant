@@ -1,0 +1,26 @@
+mode: 1
+name: mode1_full_pipeline_demo
+seed: 7
+dataset:
+  include_glob: "*.mp3"
+feed:
+  mode: realtime
+  drop: []
+  duplicate: []
+  reorder: []
+  delay_backfill: []
+  barriers:
+    - after_seq: 3
+      pause_sec: 2
+control:
+  translation:
+    rules: []
+  analysis:
+    rules: []
+history:
+  by_seq: []
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 1

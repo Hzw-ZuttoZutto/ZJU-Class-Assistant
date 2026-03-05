@@ -1,0 +1,25 @@
+mode: 2
+name: mode2_translation_control_demo
+seed: 7
+dataset:
+  include_glob: "*.mp3"
+feed:
+  mode: burst
+control:
+  translation:
+    rules:
+      - seq: 2
+        status: timeout
+        delay_sec: 2.5
+      - seq: 4
+        status: ok
+        forced_text: "这是一个强制翻译文本，用于模拟命中关键词微积分"
+  analysis:
+    rules: []
+history:
+  by_seq: []
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 1

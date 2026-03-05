@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import unittest
+
+from src.cli.parser import build_parser
+
+
+class SimulatorCliTests(unittest.TestCase):
+    def test_simulate_args_defaults(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "simulate",
+                "--mode",
+                "2",
+                "--scenario-file",
+                "tests/simulator/scenarios/mode2/sample.yaml",
+            ]
+        )
+        self.assertEqual(args.mode, 2)
+        self.assertEqual(args.sim_root, "tests/simulator")
+        self.assertEqual(args.mp3_dir, "tests/simulator/mp3_inputs")
+        self.assertEqual(args.run_dir, "tests/simulator/runs")
+        self.assertEqual(args.chunk_seconds, 10)
+        self.assertEqual(args.precompute_workers, 4)
+        self.assertEqual(args.rt_model, "gpt-5-mini")
+        self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
+        self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
+        self.assertEqual(args.rt_request_timeout_sec, 12.0)
+        self.assertEqual(args.rt_stage_timeout_sec, 60.0)
+        self.assertEqual(args.rt_retry_count, 2)
+        self.assertIsNone(args.seed)
+
+    def test_simulate_args_custom(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "simulate",
+                "--mode",
+                "5",
+                "--scenario-file",
+                "/tmp/s.yaml",
+                "--sim-root",
+                "/tmp/sim",
+                "--mp3-dir",
+                "/tmp/mp3",
+                "--run-dir",
+                "/tmp/run",
+                "--chunk-seconds",
+                "12",
+                "--precompute-workers",
+                "6",
+                "--rt-model",
+                "gpt-5-mini",
+                "--rt-stt-model",
+                "gpt-4o-mini-transcribe",
+                "--rt-keywords-file",
+                "/tmp/k.json",
+                "--rt-request-timeout-sec",
+                "8",
+                "--rt-stage-timeout-sec",
+                "40",
+                "--rt-retry-count",
+                "1",
+                "--seed",
+                "123",
+            ]
+        )
+        self.assertEqual(args.mode, 5)
+        self.assertEqual(args.sim_root, "/tmp/sim")
+        self.assertEqual(args.mp3_dir, "/tmp/mp3")
+        self.assertEqual(args.run_dir, "/tmp/run")
+        self.assertEqual(args.chunk_seconds, 12)
+        self.assertEqual(args.precompute_workers, 6)
+        self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
+        self.assertEqual(args.rt_request_timeout_sec, 8.0)
+        self.assertEqual(args.rt_stage_timeout_sec, 40.0)
+        self.assertEqual(args.rt_retry_count, 1)
+        self.assertEqual(args.seed, 123)
+
+
+if __name__ == "__main__":
+    unittest.main()

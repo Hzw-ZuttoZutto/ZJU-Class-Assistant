@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -12,9 +13,8 @@ def default_account_file() -> Path:
     return workspace_root() / ".account"
 
 
-def parse_account_file(path: Path) -> tuple[str, str]:
-    username = ""
-    password = ""
+def _parse_account_entries(path: Path) -> dict[str, str]:
+    entries: dict[str, str] = {}
     content = path.read_text(encoding="utf-8")
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -25,11 +25,56 @@ def parse_account_file(path: Path) -> tuple[str, str]:
         key, value = line.split("=", 1)
         key = key.strip().lower()
         value = value.strip()
-        if key in {"username", "user"}:
-            username = value
-        elif key in {"password", "pass"}:
-            password = value
+        if key:
+            entries[key] = value
+    return entries
+
+
+def parse_account_file(path: Path) -> tuple[str, str]:
+    entries = _parse_account_entries(path)
+    username = (entries.get("username") or entries.get("user") or "").strip()
+    password = (entries.get("password") or entries.get("pass") or "").strip()
     return username, password
+
+
+def resolve_openai_api_key(*, env_name: str = "OPENAI_API_KEY") -> tuple[str, str]:
+    resolved_env_name = (env_name or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
+    account_file = default_account_file()
+    account_read_error = ""
+
+    if account_file.exists():
+        try:
+            entries = _parse_account_entries(account_file)
+            account_key = _read_openai_key_from_entries(entries, resolved_env_name)
+            if account_key:
+                return account_key, ""
+        except OSError as exc:
+            account_read_error = f"failed to read account file {account_file}: {exc}"
+
+    env_key = os.environ.get(resolved_env_name, "").strip()
+    if env_key:
+        return env_key, ""
+
+    if account_read_error:
+        return "", account_read_error
+
+    return "", (
+        f"missing OpenAI API key: set {resolved_env_name} in {account_file} "
+        f"or export {resolved_env_name}"
+    )
+
+
+def _read_openai_key_from_entries(entries: dict[str, str], env_name: str) -> str:
+    candidates = [env_name.strip().lower(), "openai_api_key", "openai_key"]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        value = (entries.get(candidate) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def resolve_credentials(cli_username: str, cli_password: str) -> tuple[str, str, str]:

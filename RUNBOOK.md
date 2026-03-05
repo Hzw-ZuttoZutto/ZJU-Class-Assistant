@@ -45,10 +45,11 @@ python -c "import requests; print(requests.__version__)"
 cat > .account <<'EOF'
 USERNAME=你的统一认证账号
 PASSWORD=你的统一认证密码
+OPENAI_API_KEY=你的OpenAIKey
 EOF
 ```
 
-说明：`scan/watch` 默认读取该文件；如同时传 `--username/--password`，则 CLI 参数优先。
+说明：`scan/watch/simulate` 默认读取该文件；如同时传 `--username/--password`，则 CLI 参数优先。
 
 建议版本（已验证）：
 
@@ -126,7 +127,7 @@ python -m src.main watch \
 开启实时关键信息提取（可选）：
 
 ```bash
-OPENAI_API_KEY=你的key python -m src.main watch \
+python -m src.main watch \
   --course-id 83650 \
   --sub-id 1895397 \
   --record-dir ./records \
@@ -178,7 +179,57 @@ OPENAI_API_KEY=你的key python -m src.main watch \
 - 实时音频切片目录：`_rt_chunks/`
 - 实时流程：`10s音频 -> STT转写 -> 文本上下文分析`
 
-### 4.3 本地浏览器访问（SSH 转发）
+### 4.3 分析仿真器（simulate）
+用途：对实时分析链路做可控离线仿真，覆盖 5 种模式。
+
+目录约定（默认）：
+
+- 输入音频目录：`tests/simulator/mp3_inputs/`
+- 场景目录：`tests/simulator/scenarios/mode1..mode5/`
+- 缓存目录：`tests/simulator/cache/stt` 与 `tests/simulator/cache/analysis`
+- 运行输出：`tests/simulator/runs/`
+
+示例（mode1 全流程仿真）：
+
+```bash
+python -m src.main simulate \
+  --mode 1 \
+  --scenario-file tests/simulator/scenarios/mode1/example.yaml \
+  --mp3-dir tests/simulator/mp3_inputs \
+  --run-dir tests/simulator/runs \
+  --chunk-seconds 10
+```
+
+示例（mode2 翻译阶段可控，启动前全量预计算）：
+
+```bash
+python -m src.main simulate \
+  --mode 2 \
+  --scenario-file tests/simulator/scenarios/mode2/example.yaml \
+  --precompute-workers 4
+```
+
+示例（mode4 翻译 API 响应时间基准）：
+
+```bash
+python -m src.main simulate \
+  --mode 4 \
+  --scenario-file tests/simulator/scenarios/mode4/example.yaml
+```
+
+关键说明：
+
+- 模式2/3会在仿真启动前全量预计算：缓存命中直接加载，未命中补算并写入缓存。
+- 模式3历史可见性支持18位串控制：右侧最低位对应 `seq-1`，左侧最高位对应 `seq-18`。
+- 模式4/5强制禁用缓存命中，输出串行+并行统计（`avg/p95/max/min`）。
+- 仿真输出目录会产出：
+  - `realtime_transcripts.jsonl`
+  - `realtime_insights.jsonl`
+  - `realtime_insights.log`
+  - `simulate_report.json`
+  - `precompute_manifest.json`（仅mode2/mode3）
+
+### 4.4 本地浏览器访问（SSH 转发）
 在本地机器执行：
 
 ```bash
@@ -272,7 +323,7 @@ ssh clusters -L 8765:127.0.0.1:8765
 可能原因：
 
 - 未传 `--rt-insight-enabled`
-- 未设置 `OPENAI_API_KEY`
+- `.account` 未配置 `OPENAI_API_KEY`（或环境变量也未设置）
 - `openai` SDK 未安装
 - `ffmpeg` 不在 PATH
 - `--rt-stt-model` 或 `--rt-model` 对当前账号不可用
@@ -280,9 +331,26 @@ ssh clusters -L 8765:127.0.0.1:8765
 处理：
 
 - `pip install -r requirements.txt`
-- `echo $OPENAI_API_KEY` 确认变量存在
+- 检查 `.account` 中是否包含 `OPENAI_API_KEY=...`
 - 检查启动日志是否有 `[rt-insight]` 错误提示
 - 改用可用模型：`--rt-stt-model <stt_model>` / `--rt-model <analysis_model>`
+
+### 6.9 simulate 启动失败或结果异常
+可能原因：
+
+- `tests/simulator/mp3_inputs/` 下无 `mp3` 文件
+- `--scenario-file` 与 `--mode` 不一致
+- 模式2/3预计算时缺少 OpenAI API key（`.account` 或环境变量）
+- 场景中 `history.by_seq.visibility` 非18位 `0/1` 字符串
+- 模式4/5基准测试请求频率过高触发限流
+
+处理：
+
+- 先执行：`ls tests/simulator/mp3_inputs/*.mp3`
+- 校验 YAML：`mode` 字段必须与 CLI `--mode` 完全一致
+- 检查 `.account` 中是否存在 `OPENAI_API_KEY=...`
+- 从 `tests/simulator/scenarios/modeX/example.yaml` 复制模板再改
+- 降低并发和重复次数：`benchmark.parallel_workers` / `benchmark.repeats`
 
 ### 6.5 `Address already in use`
 原因：端口被占用。
@@ -317,7 +385,7 @@ python -m src.main ...
 
 ## 8. 运行安全与合规
 - 不要在脚本、日志、截图中泄露账号密码。
-- 优先通过受控环境变量或安全输入传递凭据（后续可演进）。
+- 推荐通过 `.account` 传递账号和 OpenAI key，避免命令历史中出现敏感参数。
 - 代理仅允许 `*.zju.edu.cn` / `*.cmc.zju.edu.cn`（代码已限制），不要放宽白名单。
 - 仅在授权网络与账户权限范围内使用。
 
