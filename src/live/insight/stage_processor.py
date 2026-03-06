@@ -38,6 +38,7 @@ class InsightStageProcessor:
         self._io_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._max_written_chunk_seq = 0
+        self._last_context_reason = ""
 
         self._insight_jsonl_path = self.session_dir / "realtime_insights.jsonl"
         self._text_log_path = self.session_dir / "realtime_insights.log"
@@ -64,7 +65,12 @@ class InsightStageProcessor:
             return
 
         context_chunks = self.wait_and_collect_history(chunk_seq)
-        context_text = self.render_history_context(context_chunks)
+        context_text = self.render_history_context(
+            context_chunks,
+            chunk_seq=chunk_seq,
+            target_chunks=max(1, int(self.config.context_target_chunks)),
+            mark_missing=bool(getattr(self.config, "use_dual_context_wait", False)),
+        )
         context_chunk_count = len(context_chunks)
 
         result, analysis_status, analysis_attempt, analysis_error = self.analyze_with_retry(
@@ -182,9 +188,10 @@ class InsightStageProcessor:
         if self.client is None:
             return "", "transcript_drop_error", 0, "OpenAI client unavailable"
 
-        total_attempts = max(1, 1 + int(self.config.retry_count))
+        total_attempts = max(1, int(self.config.retry_count))
         deadline = time.monotonic() + max(1.0, float(self.config.stage_timeout_sec))
         last_error = ""
+        retry_interval_sec = max(0.0, float(getattr(self.config, "context_check_interval_sec", 0.2)))
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -203,7 +210,7 @@ class InsightStageProcessor:
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
-                    time.sleep(0.2)
+                    time.sleep(retry_interval_sec or 0.2)
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "transcript_drop_timeout" if timed_out else "transcript_drop_error"
@@ -218,9 +225,10 @@ class InsightStageProcessor:
         if self.client is None:
             return None, "analysis_drop_error", 0, "OpenAI client unavailable"
 
-        total_attempts = max(1, 1 + int(self.config.retry_count))
+        total_attempts = max(1, int(self.config.retry_count))
         deadline = time.monotonic() + max(1.0, float(self.config.stage_timeout_sec))
         last_error = ""
+        retry_interval_sec = max(0.0, float(getattr(self.config, "context_check_interval_sec", 0.2)))
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -238,37 +246,58 @@ class InsightStageProcessor:
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
-                    time.sleep(0.2)
+                    time.sleep(retry_interval_sec or 0.2)
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "analysis_drop_timeout" if timed_out else "analysis_drop_error"
         return None, status, total_attempts, last_error
 
     def wait_and_collect_history(self, chunk_seq: int) -> list[TranscriptChunk]:
-        deadline = time.monotonic() + max(0.1, float(self.config.context_wait_timeout_sec))
+        poll_interval_sec = max(0.01, float(getattr(self.config, "context_check_interval_sec", 0.2)))
+        use_dual = bool(getattr(self.config, "use_dual_context_wait", False))
+        if not use_dual:
+            deadline = time.monotonic() + max(0.1, float(self.config.context_wait_timeout_sec))
+            while True:
+                history = self.load_history_chunks(chunk_seq)
+                if self.history_ready(history=history, chunk_seq=chunk_seq):
+                    self._last_context_reason = "legacy_ready"
+                    return self.trim_history(history)
+                if time.monotonic() >= deadline or self._is_stopping():
+                    self._last_context_reason = "legacy_timeout"
+                    return self.trim_history(history)
+                time.sleep(poll_interval_sec)
+
+        timeout_recent_sec = max(0.0, float(getattr(self.config, "context_wait_timeout_sec_2", 5.0)))
+        timeout_full_sec = max(0.0, float(getattr(self.config, "context_wait_timeout_sec_1", 1.0)))
+        recent_deadline = time.monotonic() + timeout_recent_sec
+        full_deadline: float | None = None
         while True:
             history = self.load_history_chunks(chunk_seq)
-            if self.history_ready(history=history, chunk_seq=chunk_seq):
+            recent_ready = self._history_recent_ready(history=history, chunk_seq=chunk_seq)
+            full_ready = self._history_window_full_ready(history=history, chunk_seq=chunk_seq)
+            if recent_ready and full_ready:
+                self._last_context_reason = "full18_ready"
                 return self.trim_history(history)
-            if time.monotonic() >= deadline or self._is_stopping():
-                return self.trim_history(history)
-            time.sleep(0.2)
 
-    def load_history_chunks(self, chunk_seq: int) -> list[TranscriptChunk]:
-        all_chunks = self.load_transcript_chunks()
-        history = [chunk for chunk in all_chunks if chunk.status == "ok" and chunk.chunk_seq < chunk_seq]
-        history.sort(key=lambda item: item.chunk_seq)
-        return history
+            now = time.monotonic()
+            if recent_ready:
+                if full_deadline is None:
+                    full_deadline = now + timeout_full_sec
+                if now >= full_deadline or self._is_stopping():
+                    self._last_context_reason = "timeout_wait_full18"
+                    return self.trim_history(history)
+            else:
+                if now >= recent_deadline or self._is_stopping():
+                    self._last_context_reason = "timeout_wait_recent4"
+                    return self.trim_history(history)
+            time.sleep(poll_interval_sec)
 
-    def history_ready(self, *, history: list[TranscriptChunk], chunk_seq: int) -> bool:
-        if len(history) < max(0, int(self.config.context_min_ready)):
-            return False
+    def _history_recent_ready(self, *, history: list[TranscriptChunk], chunk_seq: int) -> bool:
         recent_required = max(0, int(self.config.context_recent_required))
         if recent_required <= 0:
             return True
         if chunk_seq <= 1:
             return False
-
         available = {item.chunk_seq for item in history}
         start = max(1, chunk_seq - recent_required)
         required = range(start, chunk_seq)
@@ -277,6 +306,55 @@ class InsightStageProcessor:
                 return False
         return True
 
+    def _history_window_full_ready(self, *, history: list[TranscriptChunk], chunk_seq: int) -> bool:
+        target = max(1, int(self.config.context_target_chunks))
+        if chunk_seq <= 1:
+            return True
+        start = max(1, chunk_seq - target)
+        available = {item.chunk_seq for item in history}
+        for seq in range(start, chunk_seq):
+            if seq not in available:
+                return False
+        return True
+
+    @staticmethod
+    def _missing_seq_ranges(
+        *,
+        history: list[TranscriptChunk],
+        chunk_seq: int,
+        target_chunks: int,
+    ) -> list[str]:
+        if chunk_seq <= 1:
+            return []
+        start = max(1, chunk_seq - max(1, int(target_chunks)))
+        available = {item.chunk_seq for item in history}
+        ranges: list[str] = []
+        missing_start: int | None = None
+        for seq in range(start, chunk_seq):
+            if seq in available:
+                if missing_start is not None:
+                    end = seq - 1
+                    ranges.append(str(missing_start) if missing_start == end else f"{missing_start}-{end}")
+                    missing_start = None
+                continue
+            if missing_start is None:
+                missing_start = seq
+        if missing_start is not None:
+            end = chunk_seq - 1
+            ranges.append(str(missing_start) if missing_start == end else f"{missing_start}-{end}")
+        return ranges
+
+    def history_ready(self, *, history: list[TranscriptChunk], chunk_seq: int) -> bool:
+        if len(history) < max(0, int(self.config.context_min_ready)):
+            return False
+        return self._history_recent_ready(history=history, chunk_seq=chunk_seq)
+
+    def load_history_chunks(self, chunk_seq: int) -> list[TranscriptChunk]:
+        all_chunks = self.load_transcript_chunks()
+        history = [chunk for chunk in all_chunks if chunk.status == "ok" and chunk.chunk_seq < chunk_seq]
+        history.sort(key=lambda item: item.chunk_seq)
+        return history
+
     def trim_history(self, history: list[TranscriptChunk]) -> list[TranscriptChunk]:
         target = max(1, int(self.config.context_target_chunks))
         if len(history) <= target:
@@ -284,12 +362,52 @@ class InsightStageProcessor:
         return history[-target:]
 
     @staticmethod
-    def render_history_context(history: list[TranscriptChunk]) -> str:
+    def render_history_context(
+        history: list[TranscriptChunk],
+        *,
+        chunk_seq: int | None = None,
+        target_chunks: int | None = None,
+        mark_missing: bool = False,
+    ) -> str:
         if not history:
-            return "无历史文本块"
+            if not mark_missing:
+                return "无历史文本块"
+            if chunk_seq is None or chunk_seq <= 1:
+                return "无历史文本块"
+            target = max(1, int(target_chunks or 18))
+            start = max(1, chunk_seq - target)
+            missing = f"{start}" if start == (chunk_seq - 1) else f"{start}-{chunk_seq - 1}"
+            return f"[missing seq={missing}] 历史文本缺失"
+
+        if not mark_missing or chunk_seq is None:
+            lines: list[str] = []
+            for item in history:
+                lines.append(f"[seq={item.chunk_seq}][{item.ts_local}] {item.text}")
+            return "\n".join(lines)
+
+        target = max(1, int(target_chunks or 18))
+        start = max(1, chunk_seq - target)
+        by_seq = {item.chunk_seq: item for item in history}
         lines: list[str] = []
-        for item in history:
+        missing_start: int | None = None
+        for seq in range(start, chunk_seq):
+            item = by_seq.get(seq)
+            if item is None:
+                if missing_start is None:
+                    missing_start = seq
+                continue
+            if missing_start is not None:
+                end = seq - 1
+                missing = f"{missing_start}" if missing_start == end else f"{missing_start}-{end}"
+                lines.append(f"[missing seq={missing}] 历史文本缺失")
+                missing_start = None
             lines.append(f"[seq={item.chunk_seq}][{item.ts_local}] {item.text}")
+        if missing_start is not None:
+            end = chunk_seq - 1
+            missing = f"{missing_start}" if missing_start == end else f"{missing_start}-{end}"
+            lines.append(f"[missing seq={missing}] 历史文本缺失")
+        if not lines:
+            return "无历史文本块"
         return "\n".join(lines)
 
     @staticmethod

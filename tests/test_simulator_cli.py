@@ -90,6 +90,20 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.mode5_profile, "single_chunk_dual")
         self.assertEqual(args.mode5_target_seq, 4)
 
+    def test_simulate_mode6_args(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "simulate",
+                "--mode",
+                "6",
+                "--scenario-file",
+                "tests/simulator/scenarios/mode6/example.yaml",
+            ]
+        )
+        self.assertEqual(args.mode, 6)
+        self.assertEqual(args.scenario_file, "tests/simulator/scenarios/mode6/example.yaml")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,77 @@ def run_simulate(args: argparse.Namespace) -> int:
     prepared_chunk_dir = run_session_dir / "_prepared_chunks"
     run_session_dir.mkdir(parents=True, exist_ok=True)
 
+    if mode == SimulatorMode.MODE6:
+        keywords = _load_keywords(runtime.rt_keywords_file)
+        insight_config = RealtimeInsightConfig(
+            enabled=True,
+            chunk_seconds=max(2, int(runtime.chunk_seconds)),
+            model=runtime.rt_model,
+            stt_model=runtime.rt_stt_model,
+            keywords_file=runtime.rt_keywords_file,
+            request_timeout_sec=max(1.0, float(runtime.rt_request_timeout_sec)),
+            retry_count=max(0, int(runtime.rt_retry_count)),
+            stage_timeout_sec=max(1.0, float(runtime.rt_stage_timeout_sec)),
+            context_target_chunks=18,
+            context_min_ready=0,
+            context_recent_required=4,
+            context_wait_timeout_sec=5.0,
+            context_wait_timeout_sec_1=1.0,
+            context_wait_timeout_sec_2=5.0,
+            context_check_interval_sec=0.2,
+            use_dual_context_wait=True,
+        )
+        processor = InsightStageProcessor(
+            session_dir=run_session_dir,
+            config=insight_config,
+            keywords=keywords,
+            client=None,
+            log_fn=print,
+        )
+        cache_store = SimulationCacheStore(runtime.sim_root / "cache")
+        try:
+            result = run_mode(
+                mode=mode,
+                scenario=scenario,
+                chunk_paths=[],
+                chunk_seconds=runtime.chunk_seconds,
+                processor=processor,
+                cache_store=cache_store,
+                client=None,
+                keywords=keywords,
+                stt_model=runtime.rt_stt_model,
+                analysis_model=runtime.rt_model,
+                request_timeout_sec=runtime.rt_request_timeout_sec,
+                precompute_workers=runtime.precompute_workers,
+                output_dir=run_session_dir,
+                log_fn=print,
+                seed_override=effective_seed,
+                mode5_profile=runtime.mode5_profile,
+                mode5_target_seq=runtime.mode5_target_seq,
+            )
+        except Exception as exc:
+            print(f"[simulate] mode run failed: {exc}")
+            return 1
+
+        report = {
+            "mode": int(mode),
+            "scenario": runtime.scenario_file.as_posix(),
+            "scenario_name": scenario.name,
+            "seed": effective_seed,
+            "chunk_count": int(result.summary.get("case_count", 0)),
+            "run_session_dir": run_session_dir.as_posix(),
+            "summary": result.summary,
+        }
+        (run_session_dir / "simulate_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        fail_count = int(result.summary.get("fail_count", 0))
+        if fail_count > 0:
+            print(f"[simulate] mode6 failed: fail_count={fail_count}, output={run_session_dir}")
+            return 1
+        print(f"[simulate] completed mode={int(mode)} output={run_session_dir}")
+        return 0
+
     mp3_files = collect_input_mp3_files(runtime.mp3_dir, scenario.dataset)
     if not mp3_files:
         print(f"[simulate] no mp3 file found in {runtime.mp3_dir}")

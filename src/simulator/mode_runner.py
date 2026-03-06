@@ -15,6 +15,7 @@ from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClie
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore, file_sha256, keywords_hash
 from src.simulator.feed_scheduler import FeedScheduler
+from src.simulator.mode6_runner import run_mode6_validation
 from src.simulator.models import (
     ALLOWED_MODE5_PROFILES,
     DEFAULT_MODE5_PROFILE,
@@ -142,6 +143,16 @@ def run_mode(
         )
         path = output_dir / "benchmark_mode5.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return ModeRunResult(mode=int(mode), output_dir=output_dir, summary=report)
+
+    if mode == SimulatorMode.MODE6:
+        report = run_mode6_validation(
+            scenario=scenario,
+            base_config=processor.config,
+            keywords=keywords,
+            output_dir=output_dir,
+            log_fn=log,
+        )
         return ModeRunResult(mode=int(mode), output_dir=output_dir, summary=report)
 
     raise ValueError(f"unsupported simulator mode={int(mode)}")

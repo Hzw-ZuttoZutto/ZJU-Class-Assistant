@@ -1,0 +1,326 @@
+mode: 6
+name: mode6_logic_validation_demo
+seed: 7
+mode6:
+  check_interval_sec: 0.2
+  cases:
+    - id: stt_ok_once
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 8
+        stage_timeout_sec: 32
+        retry_count: 4
+        context_recent_required: 4
+        context_target_chunks: 18
+        context_wait_timeout_sec_1: 1
+        context_wait_timeout_sec_2: 5
+      stt_script:
+        - type: ok
+          text: "stt-ok-once"
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        context_reason: full18_ready
+        context_chunk_count: 18
+        missing_ranges: []
+
+    - id: stt_timeout_then_ok
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 8
+        stage_timeout_sec: 32
+        retry_count: 4
+      stt_script:
+        - type: timeout_request
+          error: "timeout-1"
+        - type: ok
+          text: "stt-ok-2"
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      expected:
+        stt_status: ok
+        stt_attempts: 2
+        analysis_called: true
+        context_reason: full18_ready
+        context_chunk_count: 18
+
+    - id: stt_error_then_ok
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 8
+        stage_timeout_sec: 32
+        retry_count: 4
+      stt_script:
+        - type: error
+          error: "parse-failed"
+        - type: ok
+          text: "stt-ok-2"
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      expected:
+        stt_status: ok
+        stt_attempts: 2
+        analysis_called: true
+        context_reason: full18_ready
+        context_chunk_count: 18
+
+    - id: stt_error_exhaust_retry
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 8
+        stage_timeout_sec: 32
+        retry_count: 4
+      stt_script:
+        - { type: error, error: "e1" }
+        - { type: error, error: "e2" }
+        - { type: error, error: "e3" }
+        - { type: error, error: "e4" }
+      expected:
+        stt_status: transcript_drop_error
+        stt_attempts: 4
+        analysis_called: false
+
+    - id: stt_timeout_exhaust_stage
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 8
+        stage_timeout_sec: 32
+        retry_count: 4
+      stt_script:
+        - { type: timeout_request, error: "t1" }
+        - { type: timeout_request, error: "t2" }
+        - { type: timeout_request, error: "t3" }
+        - { type: timeout_request, error: "t4" }
+      expected:
+        stt_status: transcript_drop_timeout
+        stt_attempts: 4
+        analysis_called: false
+
+    - id: context_full18_ready
+      chunk_seq: 19
+      config:
+        context_recent_required: 4
+        context_target_chunks: 18
+        context_wait_timeout_sec_1: 1
+        context_wait_timeout_sec_2: 5
+      stt_script:
+        - { type: ok, text: "ctx-full" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        context_reason: full18_ready
+        context_chunk_count: 18
+        missing_ranges: []
+
+    - id: context_recent_ready_then_full_within_1s
+      chunk_seq: 19
+      config:
+        context_recent_required: 4
+        context_target_chunks: 18
+        context_wait_timeout_sec_1: 1
+        context_wait_timeout_sec_2: 5
+      stt_script:
+        - { type: ok, text: "ctx-recent-first" }
+      history:
+        initial:
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+        arrivals:
+          - { at_sec: 0.6, seq: 1, text: "h1" }
+          - { at_sec: 0.6, seq: 2, text: "h2" }
+          - { at_sec: 0.6, seq: 3, text: "h3" }
+          - { at_sec: 0.6, seq: 4, text: "h4" }
+          - { at_sec: 0.6, seq: 5, text: "h5" }
+          - { at_sec: 0.6, seq: 6, text: "h6" }
+          - { at_sec: 0.6, seq: 7, text: "h7" }
+          - { at_sec: 0.6, seq: 8, text: "h8" }
+          - { at_sec: 0.6, seq: 9, text: "h9" }
+          - { at_sec: 0.6, seq: 10, text: "h10" }
+          - { at_sec: 0.6, seq: 11, text: "h11" }
+          - { at_sec: 0.6, seq: 12, text: "h12" }
+          - { at_sec: 0.6, seq: 13, text: "h13" }
+          - { at_sec: 0.6, seq: 14, text: "h14" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        context_reason: full18_ready
+        context_chunk_count: 18
+        missing_ranges: []
+
+    - id: context_recent_ready_but_full_timeout_1s
+      chunk_seq: 19
+      config:
+        context_recent_required: 4
+        context_target_chunks: 18
+        context_wait_timeout_sec_1: 1
+        context_wait_timeout_sec_2: 5
+      stt_script:
+        - { type: ok, text: "ctx-timeout1" }
+      history:
+        initial:
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        context_reason: timeout_wait_full18
+        context_chunk_count: 4
+        missing_ranges: ["1-14"]
+
+    - id: context_recent_missing_then_arrive_before_5s
+      chunk_seq: 19
+      config:
+        context_recent_required: 4
+        context_target_chunks: 18
+        context_wait_timeout_sec_1: 1
+        context_wait_timeout_sec_2: 5
+      stt_script:
+        - { type: ok, text: "ctx-recent-late" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+        arrivals:
+          - { at_sec: 0.4, seq: 16, text: "h16" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        context_reason: full18_ready
+        context_chunk_count: 18
+        missing_ranges: []
+
+    - id: context_recent_missing_timeout_5s
+      chunk_seq: 19
+      config:
+        context_recent_required: 4
+        context_target_chunks: 18
+        context_wait_timeout_sec_1: 1
+        context_wait_timeout_sec_2: 5
+      stt_script:
+        - { type: ok, text: "ctx-timeout2" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        context_reason: timeout_wait_recent4
+        context_chunk_count: 17
+        missing_ranges: ["15"]

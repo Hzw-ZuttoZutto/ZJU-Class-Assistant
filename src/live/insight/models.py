@@ -64,6 +64,10 @@ class RealtimeInsightConfig:
     context_min_ready: int = 15
     context_recent_required: int = 4
     context_wait_timeout_sec: float = 15.0
+    context_wait_timeout_sec_1: float = 1.0
+    context_wait_timeout_sec_2: float = 5.0
+    context_check_interval_sec: float = 0.2
+    use_dual_context_wait: bool = False
     context_target_chunks: int = 18
 
 

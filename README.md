@@ -11,7 +11,7 @@ python -m src.main <subcommand> ...
 - `src/main.py`：CLI 总入口
 - `src/scan/`：课程扫描逻辑
 - `src/live/`：直播轮询、代理、Web 服务
-- `src/simulator/`：实时分析仿真器（5模式）
+- `src/simulator/`：实时分析仿真器（6模式）
 - `src/live_video.py`：教师流选择策略（优先音轨可用）
 - `src/live_ppt.py`：PPT 流选择策略
 - `tests/`：单元与集成测试
@@ -104,6 +104,11 @@ python -m src.main simulate \
   --scenario-file tests/simulator/scenarios/mode4/example.yaml \
   --rt-api-base-url https://aihubmix.com/v1 \
   --rt-stt-model whisper-large-v3
+
+# 启动仿真器（mode6：离线逻辑正确性验证，不依赖 mp3 / OpenAI）
+python -m src.main simulate \
+  --mode 6 \
+  --scenario-file tests/simulator/scenarios/mode6/example.yaml
 ```
 
 凭据规则：
@@ -135,11 +140,12 @@ python -m src.main simulate \
 
 仿真器说明：
 
-- 场景文件格式为 YAML，目录按模式组织：`tests/simulator/scenarios/mode1..mode5/`。
+- 场景文件格式为 YAML，目录按模式组织：`tests/simulator/scenarios/mode1..mode6/`。
 - 模式2/3会在仿真启动前执行全量预计算：缓存命中直接复用，未命中补算并写入 `tests/simulator/cache/{stt,analysis}`。
 - 模式3支持 18 位历史可见性串控制：右侧最低位对应 `seq-1`，左侧最高位对应 `seq-18`。
 - 模式4为 STT 基准测试：每次样本都直接请求 STT API，不用本地 STT 缓存替代。
 - 模式5为分析基准测试：分析阶段不读取 analysis 缓存；分析前统一转写阶段允许命中 STT 缓存，缺失时补算并写回。
+- 模式6为离线逻辑验证：按 `mode6.cases` 脚本驱动 STT/历史到达并做严格断言，输出 `mode6_report.json` 与 `mode6_trace.jsonl`。
 - 仿真运行产物位于 `tests/simulator/runs/<scenario>_modeX_<ts>/`，核心文件：
   - `realtime_transcripts.jsonl`
   - `realtime_insights.jsonl`

@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
         "simulate",
         help="Run offline simulator for realtime insight pipeline with configurable scenarios",
     )
-    simulate.add_argument("--mode", type=int, choices=[1, 2, 3, 4, 5], required=True, help="Simulator mode")
+    simulate.add_argument("--mode", type=int, choices=[1, 2, 3, 4, 5, 6], required=True, help="Simulator mode")
     simulate.add_argument(
         "--scenario-file",
         required=True,

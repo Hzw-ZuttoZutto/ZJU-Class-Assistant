@@ -11,6 +11,7 @@ class SimulatorMode(IntEnum):
     MODE3 = 3
     MODE4 = 4
     MODE5 = 5
+    MODE6 = 6
 
     @classmethod
     def from_int(cls, value: int) -> "SimulatorMode":
@@ -20,6 +21,8 @@ class SimulatorMode(IntEnum):
 ALLOWED_CONTROL_STATUS = {"ok", "timeout", "error", "drop"}
 ALLOWED_MODE5_PROFILES = {"all_chunks_dual", "single_chunk_dual", "all_chunks_serial_once"}
 DEFAULT_MODE5_PROFILE = "all_chunks_dual"
+ALLOWED_MODE6_STT_STEP_TYPES = {"ok", "error", "timeout_request"}
+ALLOWED_MODE6_CONTEXT_REASONS = {"full18_ready", "timeout_wait_full18", "timeout_wait_recent4"}
 
 
 @dataclass
@@ -90,6 +93,69 @@ class BenchmarkConfig:
 
 
 @dataclass
+class Mode6CaseConfig:
+    request_timeout_sec: float | None = None
+    stage_timeout_sec: float | None = None
+    retry_count: int | None = None
+    context_recent_required: int | None = None
+    context_target_chunks: int | None = None
+    context_wait_timeout_sec_1: float | None = None
+    context_wait_timeout_sec_2: float | None = None
+
+
+@dataclass
+class Mode6SttStep:
+    type: str = "ok"
+    text: str = ""
+    error: str = ""
+    delay_sec: float = 0.0
+
+    def normalized_type(self) -> str:
+        text = (self.type or "ok").strip().lower()
+        return text if text in ALLOWED_MODE6_STT_STEP_TYPES else "ok"
+
+
+@dataclass
+class Mode6HistoryItem:
+    seq: int
+    text: str
+
+
+@dataclass
+class Mode6HistoryArrival:
+    at_sec: float
+    seq: int
+    text: str
+
+
+@dataclass
+class Mode6Expected:
+    stt_status: str = ""
+    stt_attempts: int | None = None
+    analysis_called: bool | None = None
+    context_reason: str = ""
+    context_chunk_count: int | None = None
+    missing_ranges: list[str] | None = None
+
+
+@dataclass
+class Mode6Case:
+    id: str
+    chunk_seq: int
+    config: Mode6CaseConfig = field(default_factory=Mode6CaseConfig)
+    stt_script: list[Mode6SttStep] = field(default_factory=list)
+    history_initial: list[Mode6HistoryItem] = field(default_factory=list)
+    history_arrivals: list[Mode6HistoryArrival] = field(default_factory=list)
+    expected: Mode6Expected = field(default_factory=Mode6Expected)
+
+
+@dataclass
+class Mode6Config:
+    check_interval_sec: float = 0.2
+    cases: list[Mode6Case] = field(default_factory=list)
+
+
+@dataclass
 class Scenario:
     mode: SimulatorMode
     name: str
@@ -100,6 +166,7 @@ class Scenario:
     history_rules: list[HistoryRule] = field(default_factory=list)
     precompute: PrecomputeConfig = field(default_factory=PrecomputeConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
+    mode6: Mode6Config = field(default_factory=Mode6Config)
     seed: int | None = None
     mode3_variant: str = "complete_history"
 

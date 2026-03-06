@@ -103,6 +103,96 @@ class ScenarioLoaderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_visibility_mask("11111111001100110x")
 
+    def test_load_mode6_case_driven_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m6.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 6
+                    name: mode6-case
+                    mode6:
+                      check_interval_sec: 0.2
+                      cases:
+                        - id: c1
+                          chunk_seq: 19
+                          config:
+                            request_timeout_sec: 8
+                            stage_timeout_sec: 32
+                            retry_count: 4
+                            context_recent_required: 4
+                            context_target_chunks: 18
+                            context_wait_timeout_sec_1: 1
+                            context_wait_timeout_sec_2: 5
+                          stt_script:
+                            - type: timeout_request
+                            - type: ok
+                              text: done
+                          history:
+                            initial:
+                              - seq: 15
+                                text: h15
+                              - seq: 16
+                                text: h16
+                              - seq: 17
+                                text: h17
+                              - seq: 18
+                                text: h18
+                            arrivals:
+                              - at_sec: 0.6
+                                seq: 1
+                                text: h1
+                          expected:
+                            stt_status: ok
+                            stt_attempts: 2
+                            analysis_called: true
+                            context_reason: full18_ready
+                            context_chunk_count: 5
+                            missing_ranges: []
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            scenario = load_scenario(path, expected_mode=SimulatorMode.MODE6)
+            self.assertEqual(int(scenario.mode), 6)
+            self.assertAlmostEqual(scenario.mode6.check_interval_sec, 0.2)
+            self.assertEqual(len(scenario.mode6.cases), 1)
+            case = scenario.mode6.cases[0]
+            self.assertEqual(case.id, "c1")
+            self.assertEqual(case.chunk_seq, 19)
+            self.assertEqual(case.stt_script[0].normalized_type(), "timeout_request")
+            self.assertEqual(case.stt_script[1].text, "done")
+            self.assertEqual(case.expected.context_reason, "full18_ready")
+
+    def test_reject_mode6_duplicate_history_seq(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m6_bad.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 6
+                    mode6:
+                      cases:
+                        - id: bad
+                          chunk_seq: 10
+                          stt_script:
+                            - type: ok
+                              text: hi
+                          history:
+                            initial:
+                              - seq: 1
+                                text: a
+                            arrivals:
+                              - at_sec: 0.2
+                                seq: 1
+                                text: b
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                _ = load_scenario(path, expected_mode=SimulatorMode.MODE6)
+
 
 if __name__ == "__main__":
     unittest.main()

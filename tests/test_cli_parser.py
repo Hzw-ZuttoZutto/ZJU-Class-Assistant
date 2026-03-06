@@ -185,6 +185,20 @@ class CliParserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = _build_runtime_config(args)
 
+    def test_simulate_mode6_profile_ignores_mode5_target(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "simulate",
+                "--mode",
+                "6",
+                "--scenario-file",
+                "tests/simulator/scenarios/mode6/example.yaml",
+            ]
+        )
+        cfg = _build_runtime_config(args)
+        self.assertEqual(int(cfg.mode), 6)
+
 
 if __name__ == "__main__":
     unittest.main()
