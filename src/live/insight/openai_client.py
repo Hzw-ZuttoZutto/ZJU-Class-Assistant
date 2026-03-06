@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -96,12 +97,22 @@ class OpenAIInsightClient:
                     ],
                 },
             ],
-            "max_output_tokens": 320,
+            # gpt-5 family may return status=incomplete with only reasoning blocks under tight token limits.
+            "max_output_tokens": 1200,
+            "reasoning": {"effort": "minimal"},
+            "text": {"verbosity": "low"},
             "timeout": max(1.0, float(timeout_sec)),
         }
         response = self._create_analysis_response(payload)
-        output_text = _extract_output_text(response)
-        payload = _parse_json_payload(output_text)
+        try:
+            payload = _extract_analysis_payload(response)
+        except ValueError as exc:
+            if not _should_retry_analysis_response(response=response, error=exc):
+                raise
+            retry_payload = dict(payload)
+            retry_payload["max_output_tokens"] = max(1600, int(payload.get("max_output_tokens", 1200)) * 2)
+            response = self._create_analysis_response(retry_payload)
+            payload = _extract_analysis_payload(response)
         return InsightModelResult(
             important=_to_bool(payload.get("important")),
             summary=str(payload.get("summary", "")).strip(),
@@ -111,15 +122,23 @@ class OpenAIInsightClient:
         )
 
     def _create_analysis_response(self, payload: dict[str, Any]) -> Any:
-        with_temperature = dict(payload)
-        with_temperature["temperature"] = 0
-        try:
-            return self.client.responses.create(**with_temperature)
-        except Exception as exc:
-            # gpt-5 family may reject temperature; retry once without it.
-            if _is_temperature_unsupported_error(exc):
-                return self.client.responses.create(**payload)
-            raise
+        request = dict(payload)
+        request["temperature"] = 0
+        removed: set[str] = set()
+        for _ in range(6):
+            try:
+                return self.client.responses.create(**request)
+            except Exception as exc:
+                unsupported = _extract_unsupported_parameter(exc)
+                if not unsupported:
+                    raise
+                key = unsupported.split(".", 1)[0]
+                if not key or key not in request or key in removed:
+                    raise
+                removed.add(key)
+                request = dict(request)
+                request.pop(key, None)
+        return self.client.responses.create(**request)
 
 
 def _extract_transcript_text(response: Any) -> str:
@@ -152,6 +171,11 @@ def _extract_output_text(response: Any) -> str:
         if text:
             return text
     raise ValueError("model response has no output_text")
+
+
+def _extract_analysis_payload(response: Any) -> dict:
+    output_text = _extract_output_text(response)
+    return _parse_json_payload(output_text)
 
 
 def _extract_text_from_output(output: Any) -> str:
@@ -199,6 +223,40 @@ def _parse_json_payload(text: str) -> dict:
     return payload
 
 
+def _should_retry_analysis_response(*, response: Any, error: Exception) -> bool:
+    if not _is_output_parsing_error(error):
+        return False
+    dumped = _safe_model_dump(response)
+    if not isinstance(dumped, dict):
+        return False
+    status = str(dumped.get("status", "")).strip().lower()
+    if status != "incomplete":
+        return False
+    details = dumped.get("incomplete_details")
+    if not isinstance(details, dict):
+        return False
+    reason = str(details.get("reason", "")).strip().lower()
+    return reason == "max_output_tokens"
+
+
+def _is_output_parsing_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return ("output_text" in message) or ("valid json" in message)
+
+
+def _safe_model_dump(response: Any) -> dict | None:
+    if isinstance(response, dict):
+        return response
+    if hasattr(response, "model_dump"):
+        try:
+            dumped = response.model_dump()
+        except Exception:
+            return None
+        if isinstance(dumped, dict):
+            return dumped
+    return None
+
+
 def _to_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -225,5 +283,17 @@ def _to_str_list(value: Any) -> list[str]:
 
 
 def _is_temperature_unsupported_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return "unsupported parameter" in message and "temperature" in message
+    return _extract_unsupported_parameter(exc) == "temperature"
+
+
+def _extract_unsupported_parameter(exc: Exception) -> str:
+    message = str(exc)
+    patterns = [
+        r"unsupported parameter:\s*['\"]?([a-zA-Z0-9_.-]+)['\"]?",
+        r"unsupported parameter\s+['\"]?([a-zA-Z0-9_.-]+)['\"]?",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            return str(match.group(1)).strip().lower()
+    return ""
