@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.live.insight.models import KeywordConfig
 from src.live.insight.prompting import build_system_prompt, build_user_prompt
@@ -73,26 +74,29 @@ class OpenAIInsightClient:
         current_text: str,
         context_text: str,
         timeout_sec: float,
+        debug_hook: Callable[[dict[str, Any]], None] | None = None,
     ) -> InsightModelResult:
         if not analysis_model:
             raise ValueError("analysis_model is empty")
-        payload = {
+        system_prompt = build_system_prompt()
+        user_prompt = build_user_prompt(
+            keywords=keywords,
+            current_text=current_text,
+            context_text=context_text,
+        )
+        request_payload = {
             "model": analysis_model,
             "input": [
                 {
                     "role": "system",
-                    "content": [{"type": "input_text", "text": build_system_prompt()}],
+                    "content": [{"type": "input_text", "text": system_prompt}],
                 },
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "input_text",
-                            "text": build_user_prompt(
-                                keywords=keywords,
-                                current_text=current_text,
-                                context_text=context_text,
-                            ),
+                            "text": user_prompt,
                         }
                     ],
                 },
@@ -103,31 +107,94 @@ class OpenAIInsightClient:
             "text": {"verbosity": "low"},
             "timeout": max(1.0, float(timeout_sec)),
         }
-        response = self._create_analysis_response(payload)
-        try:
-            payload = _extract_analysis_payload(response)
-        except ValueError as exc:
-            if not _should_retry_analysis_response(response=response, error=exc):
-                raise
-            retry_payload = dict(payload)
-            retry_payload["max_output_tokens"] = max(1600, int(payload.get("max_output_tokens", 1200)) * 2)
-            response = self._create_analysis_response(retry_payload)
-            payload = _extract_analysis_payload(response)
+        parsed_payload = self._run_analysis_attempt(
+            request_payload=request_payload,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            debug_hook=debug_hook,
+        )
         return InsightModelResult(
-            important=_to_bool(payload.get("important")),
-            summary=str(payload.get("summary", "")).strip(),
-            context_summary=str(payload.get("context_summary", "")).strip(),
-            matched_terms=_to_str_list(payload.get("matched_terms")),
-            reason=str(payload.get("reason", "")).strip(),
+            important=_to_bool(parsed_payload.get("important")),
+            summary=str(parsed_payload.get("summary", "")).strip(),
+            context_summary=str(parsed_payload.get("context_summary", "")).strip(),
+            matched_terms=_to_str_list(parsed_payload.get("matched_terms")),
+            reason=str(parsed_payload.get("reason", "")).strip(),
         )
 
-    def _create_analysis_response(self, payload: dict[str, Any]) -> Any:
+    def _run_analysis_attempt(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        system_prompt: str,
+        user_prompt: str,
+        debug_hook: Callable[[dict[str, Any]], None] | None,
+    ) -> dict:
+        response = None
+        effective_request: dict[str, Any] = dict(request_payload)
+        raw_response_text = ""
+        duration_sec = 0.0
+        parse_error: Exception | None = None
+        parsed_payload: dict | None = None
+        started = time.monotonic()
+        try:
+            response, effective_request = self._create_analysis_response(request_payload)
+            raw_response_text = _safe_extract_output_text(response)
+            parsed_payload = _extract_analysis_payload(response)
+        except Exception as exc:
+            parse_error = exc
+        duration_sec = time.monotonic() - started
+
+        if parsed_payload is not None:
+            _emit_analysis_debug(
+                hook=debug_hook,
+                payload={
+                    "system_prompt": system_prompt,
+                    "user_prompt": user_prompt,
+                    "request_payload_snapshot": effective_request,
+                    "raw_response_text": raw_response_text,
+                    "parsed_ok": True,
+                    "parsed_payload": parsed_payload,
+                    "error": "",
+                    "duration_sec": duration_sec,
+                },
+            )
+            return parsed_payload
+
+        if parse_error is None:
+            parse_error = ValueError("analysis attempt failed with unknown error")
+
+        _emit_analysis_debug(
+            hook=debug_hook,
+            payload={
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "request_payload_snapshot": effective_request,
+                "raw_response_text": raw_response_text,
+                "parsed_ok": False,
+                "parsed_payload": {},
+                "error": str(parse_error),
+                "duration_sec": duration_sec,
+            },
+        )
+
+        if response is not None and _should_retry_analysis_response(response=response, error=parse_error):
+            retry_payload = dict(request_payload)
+            retry_payload["max_output_tokens"] = max(1600, int(request_payload.get("max_output_tokens", 1200)) * 2)
+            return self._run_analysis_attempt(
+                request_payload=retry_payload,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                debug_hook=debug_hook,
+            )
+        raise parse_error
+
+    def _create_analysis_response(self, payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         request = dict(payload)
         request["temperature"] = 0
         removed: set[str] = set()
         for _ in range(6):
             try:
-                return self.client.responses.create(**request)
+                return self.client.responses.create(**request), dict(request)
             except Exception as exc:
                 unsupported = _extract_unsupported_parameter(exc)
                 if not unsupported:
@@ -138,7 +205,7 @@ class OpenAIInsightClient:
                 removed.add(key)
                 request = dict(request)
                 request.pop(key, None)
-        return self.client.responses.create(**request)
+        return self.client.responses.create(**request), dict(request)
 
 
 def _extract_transcript_text(response: Any) -> str:
@@ -176,6 +243,13 @@ def _extract_output_text(response: Any) -> str:
 def _extract_analysis_payload(response: Any) -> dict:
     output_text = _extract_output_text(response)
     return _parse_json_payload(output_text)
+
+
+def _safe_extract_output_text(response: Any) -> str:
+    try:
+        return _extract_output_text(response)
+    except Exception:
+        return ""
 
 
 def _extract_text_from_output(output: Any) -> str:
@@ -255,6 +329,19 @@ def _safe_model_dump(response: Any) -> dict | None:
         if isinstance(dumped, dict):
             return dumped
     return None
+
+
+def _emit_analysis_debug(
+    *,
+    hook: Callable[[dict[str, Any]], None] | None,
+    payload: dict[str, Any],
+) -> None:
+    if hook is None:
+        return
+    try:
+        hook(payload)
+    except Exception:
+        return
 
 
 def _to_bool(value: Any) -> bool:

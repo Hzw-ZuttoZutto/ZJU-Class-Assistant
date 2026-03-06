@@ -11,14 +11,23 @@ from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore
 from src.simulator.mode_runner import run_mode
-from src.simulator.models import SimulateRuntimeConfig, SimulatorMode
+from src.simulator.models import (
+    ALLOWED_MODE5_PROFILES,
+    DEFAULT_MODE5_PROFILE,
+    SimulateRuntimeConfig,
+    SimulatorMode,
+)
 from src.simulator.precompute import run_precompute, write_precompute_manifest
 from src.simulator.preprocessor import collect_input_mp3_files, preprocess_mp3_to_chunks
 from src.simulator.scenario_loader import load_scenario
 
 
 def run_simulate(args: argparse.Namespace) -> int:
-    runtime = _build_runtime_config(args)
+    try:
+        runtime = _build_runtime_config(args)
+    except ValueError as exc:
+        print(f"[simulate] invalid args: {exc}")
+        return 1
     mode = runtime.mode
 
     scenario = load_scenario(runtime.scenario_file, expected_mode=mode)
@@ -115,6 +124,8 @@ def run_simulate(args: argparse.Namespace) -> int:
             output_dir=run_session_dir,
             log_fn=print,
             seed_override=effective_seed,
+            mode5_profile=runtime.mode5_profile,
+            mode5_target_seq=runtime.mode5_target_seq,
         )
     except Exception as exc:
         print(f"[simulate] mode run failed: {exc}")
@@ -145,6 +156,22 @@ def _build_runtime_config(args: argparse.Namespace) -> SimulateRuntimeConfig:
     run_dir = Path(args.run_dir).expanduser().resolve()
     keywords_file = Path(args.rt_keywords_file).expanduser().resolve()
 
+    mode5_profile = str(getattr(args, "mode5_profile", DEFAULT_MODE5_PROFILE) or DEFAULT_MODE5_PROFILE).strip()
+    if mode5_profile not in ALLOWED_MODE5_PROFILES:
+        raise ValueError(f"unsupported mode5 profile: {mode5_profile}")
+    mode5_target_seq = getattr(args, "mode5_target_seq", None)
+    if mode5_target_seq is not None:
+        try:
+            mode5_target_seq = int(mode5_target_seq)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mode5 target seq must be integer") from exc
+        if mode5_target_seq <= 0:
+            raise ValueError("mode5 target seq must be >= 1")
+    if mode == SimulatorMode.MODE5 and mode5_profile == "single_chunk_dual" and mode5_target_seq is None:
+        raise ValueError("mode5 target seq is required when mode5 profile is single_chunk_dual")
+    if mode != SimulatorMode.MODE5 and mode5_target_seq is not None:
+        raise ValueError("mode5 target seq is only valid when mode is 5")
+
     return SimulateRuntimeConfig(
         mode=mode,
         scenario_file=scenario_file,
@@ -161,6 +188,8 @@ def _build_runtime_config(args: argparse.Namespace) -> SimulateRuntimeConfig:
         rt_stage_timeout_sec=max(1.0, float(args.rt_stage_timeout_sec)),
         rt_retry_count=max(0, int(args.rt_retry_count)),
         seed=int(args.seed) if args.seed is not None else None,
+        mode5_profile=mode5_profile,
+        mode5_target_seq=mode5_target_seq,
     )
 
 

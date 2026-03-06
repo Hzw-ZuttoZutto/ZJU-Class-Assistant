@@ -18,6 +18,8 @@ class SimulatorMode(IntEnum):
 
 
 ALLOWED_CONTROL_STATUS = {"ok", "timeout", "error", "drop"}
+ALLOWED_MODE5_PROFILES = {"all_chunks_dual", "single_chunk_dual", "all_chunks_serial_once"}
+DEFAULT_MODE5_PROFILE = "all_chunks_dual"
 
 
 @dataclass
@@ -137,3 +139,5 @@ class SimulateRuntimeConfig:
     rt_stage_timeout_sec: float
     rt_retry_count: int
     seed: int | None
+    mode5_profile: str = DEFAULT_MODE5_PROFILE
+    mode5_target_seq: int | None = None

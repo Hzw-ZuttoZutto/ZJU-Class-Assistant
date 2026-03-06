@@ -8,14 +8,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Callable
+from typing import Any, Callable
 
 from src.live.insight.models import KeywordConfig
 from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore, file_sha256, keywords_hash
 from src.simulator.feed_scheduler import FeedScheduler
-from src.simulator.models import Scenario, SimulatorMode
+from src.simulator.models import (
+    ALLOWED_MODE5_PROFILES,
+    DEFAULT_MODE5_PROFILE,
+    Scenario,
+    SimulatorMode,
+)
 
 
 @dataclass
@@ -23,6 +28,15 @@ class ModeRunResult:
     mode: int
     output_dir: Path
     summary: dict
+
+
+@dataclass(frozen=True)
+class Mode5ChunkSample:
+    chunk_seq: int
+    chunk_file: str
+    current_text: str
+    context_text: str
+    context_chunk_count: int
 
 
 def run_mode(
@@ -42,6 +56,8 @@ def run_mode(
     output_dir: Path,
     log_fn: Callable[[str], None] | None = None,
     seed_override: int | None = None,
+    mode5_profile: str = DEFAULT_MODE5_PROFILE,
+    mode5_target_seq: int | None = None,
 ) -> ModeRunResult:
     log = log_fn or print
     seed = seed_override if seed_override is not None else scenario.seed
@@ -119,6 +135,9 @@ def run_mode(
             request_timeout_sec=request_timeout_sec,
             parallel_workers=max(1, int(scenario.benchmark.parallel_workers or precompute_workers)),
             repeats=max(1, int(scenario.benchmark.repeats)),
+            profile=mode5_profile,
+            target_seq=mode5_target_seq,
+            output_dir=output_dir,
             log_fn=log,
         )
         path = output_dir / "benchmark_mode5.json"
@@ -387,8 +406,13 @@ def _run_mode5_benchmark(
     request_timeout_sec: float,
     parallel_workers: int,
     repeats: int,
+    profile: str,
+    target_seq: int | None,
+    output_dir: Path,
     log_fn: Callable[[str], None],
 ) -> dict:
+    normalized_profile = _normalize_mode5_profile(profile)
+
     transcripts, transcript_prep = _prepare_mode5_transcripts(
         chunk_paths=chunk_paths,
         cache_store=cache_store,
@@ -399,12 +423,31 @@ def _run_mode5_benchmark(
         chunk_seconds=chunk_seconds,
         request_timeout_sec=request_timeout_sec,
     )
-    samples = _build_mode5_samples(transcripts)
+    all_samples = _build_mode5_samples(chunk_paths=chunk_paths, transcripts=transcripts)
+    selected_samples = _select_mode5_samples(
+        samples=all_samples,
+        profile=normalized_profile,
+        target_seq=target_seq,
+    )
+    serial_repeats = 1 if normalized_profile == "all_chunks_serial_once" else max(1, int(repeats))
+    parallel_repeats = 0 if normalized_profile == "all_chunks_serial_once" else max(1, int(repeats))
 
     errors: list[str] = []
     analysis_samples: list[dict] = []
     analysis_sample_limit = 8
+    chunk_results: list[dict] = []
     sample_lock = threading.Lock()
+    chunk_result_lock = threading.Lock()
+    trace_lock = threading.Lock()
+    trace_path = output_dir / "mode5_analysis_trace.jsonl"
+    trace_path.write_text("", encoding="utf-8")
+
+    def trace_writer(payload: dict[str, Any]) -> None:
+        encoded = json.dumps(_to_jsonable(payload), ensure_ascii=False)
+        with trace_lock:
+            with trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(encoded)
+                handle.write("\n")
 
     serial_samples = _benchmark_serial(
         tasks=[
@@ -413,53 +456,76 @@ def _run_mode5_benchmark(
                     client=client,
                     analysis_model=analysis_model,
                     keywords=keywords,
-                    pair=pair,
+                    sample=sample,
                     timeout_sec=request_timeout_sec,
                     sample_sink=analysis_samples,
                     sample_limit=analysis_sample_limit,
                     sample_lock=sample_lock,
+                    chunk_result_sink=chunk_results,
+                    chunk_result_lock=chunk_result_lock,
+                    trace_writer=trace_writer,
+                    profile=normalized_profile,
                     source="serial",
+                    repeat_index=repeat_idx,
                 ),
                 error_sink=errors,
             )
-            for _ in range(repeats)
-            for pair in samples
+            for repeat_idx in range(1, serial_repeats + 1)
+            for sample in selected_samples
         ]
     )
 
-    parallel_samples = _benchmark_parallel(
-        tasks=[
+    parallel_tasks: list[Callable[[], object]] = []
+    if parallel_repeats > 0:
+        parallel_tasks = [
             _wrap_task_with_error_capture(
                 _build_mode5_task(
                     client=client,
                     analysis_model=analysis_model,
                     keywords=keywords,
-                    pair=pair,
+                    sample=sample,
                     timeout_sec=request_timeout_sec,
                     sample_sink=analysis_samples,
                     sample_limit=analysis_sample_limit,
                     sample_lock=sample_lock,
+                    chunk_result_sink=chunk_results,
+                    chunk_result_lock=chunk_result_lock,
+                    trace_writer=trace_writer,
+                    profile=normalized_profile,
                     source="parallel",
+                    repeat_index=repeat_idx,
                 ),
                 error_sink=errors,
             )
-            for _ in range(repeats)
-            for pair in samples
-        ],
+            for repeat_idx in range(1, parallel_repeats + 1)
+            for sample in selected_samples
+        ]
+    parallel_samples = _benchmark_parallel(
+        tasks=parallel_tasks,
         workers=parallel_workers,
     )
 
     report = {
         "mode": 5,
+        "profile": normalized_profile,
+        "target_seq": int(target_seq) if target_seq is not None else None,
+        "analysis_trace_file": trace_path.as_posix(),
+        "all_chunk_count": len(all_samples),
+        "selected_chunk_count": len(selected_samples),
+        "repeats_configured": max(1, int(repeats)),
+        "serial_repeats": serial_repeats,
+        "parallel_repeats": parallel_repeats,
         "serial": _summarize_samples(serial_samples),
         "parallel": _summarize_samples(parallel_samples),
         "errors": _summarize_error_messages(errors),
         "transcript_prep": transcript_prep,
         "analysis_samples": analysis_samples,
+        "chunk_results": _sort_mode5_chunk_results(chunk_results),
     }
     log_fn(
         "[simulate] mode5 benchmark "
-        f"serial_avg={report['serial']['avg_sec']:.3f}s parallel_avg={report['parallel']['avg_sec']:.3f}s"
+        f"profile={normalized_profile} serial_avg={report['serial']['avg_sec']:.3f}s "
+        f"parallel_avg={report['parallel']['avg_sec']:.3f}s"
     )
     return report
 
@@ -474,10 +540,10 @@ def _prepare_mode5_transcripts(
     analysis_model: str,
     chunk_seconds: int,
     request_timeout_sec: float,
-) -> tuple[list[str], dict]:
+) -> tuple[list[dict[str, Any]], dict]:
     keyword_hash = keywords_hash(keywords)
     timeout_sec = max(1.0, float(request_timeout_sec))
-    transcripts: list[str] = []
+    transcripts: list[dict[str, Any]] = []
     prep = {
         "chunk_count": len(chunk_paths),
         "cache_hits": 0,
@@ -497,7 +563,13 @@ def _prepare_mode5_transcripts(
         cached_text = cache_store.load_stt(key)
         if cached_text:
             prep["cache_hits"] += 1
-            transcripts.append(cached_text)
+            transcripts.append(
+                {
+                    "chunk_seq": seq,
+                    "chunk_file": chunk_path.name,
+                    "text": cached_text,
+                }
+            )
             continue
 
         prep["cache_misses"] += 1
@@ -519,22 +591,68 @@ def _prepare_mode5_transcripts(
                 f"mode5 transcript prepare failed seq={seq} chunk={chunk_path.name}: empty transcript"
             )
         cache_store.store_stt(key, text=text)
-        transcripts.append(text)
+        transcripts.append(
+            {
+                "chunk_seq": seq,
+                "chunk_file": chunk_path.name,
+                "text": text,
+            }
+        )
 
     return transcripts, prep
 
 
-def _build_mode5_samples(transcripts: list[str]) -> list[tuple[str, str]]:
-    samples: list[tuple[str, str]] = []
+def _build_mode5_samples(
+    *,
+    chunk_paths: list[Path],
+    transcripts: list[dict[str, Any]],
+) -> list[Mode5ChunkSample]:
+    samples: list[Mode5ChunkSample] = []
     history: list[str] = []
-    for seq, current_text in enumerate(transcripts, start=1):
-        text = (current_text or "").strip()
+    for idx, transcript in enumerate(transcripts, start=1):
+        seq = int(transcript.get("chunk_seq", idx))
+        chunk_file = str(transcript.get("chunk_file", "")).strip()
+        if not chunk_file and idx - 1 < len(chunk_paths):
+            chunk_file = chunk_paths[idx - 1].name
+        text = str(transcript.get("text", "")).strip()
         if not text:
             raise RuntimeError(f"mode5 transcript prepare produced empty transcript seq={seq}")
-        context = "\n".join(history[-18:]) if history else "无历史文本块"
-        samples.append((text, context))
+        history_lines = history[-18:]
+        context = "\n".join(history_lines) if history_lines else "无历史文本块"
+        samples.append(
+            Mode5ChunkSample(
+                chunk_seq=seq,
+                chunk_file=chunk_file,
+                current_text=text,
+                context_text=context,
+                context_chunk_count=len(history_lines),
+            )
+        )
         history.append(f"[seq={seq}] {text}")
     return samples
+
+
+def _select_mode5_samples(
+    *,
+    samples: list[Mode5ChunkSample],
+    profile: str,
+    target_seq: int | None,
+) -> list[Mode5ChunkSample]:
+    if profile != "single_chunk_dual":
+        return samples
+    if target_seq is None:
+        raise RuntimeError("mode5 target seq is required for single_chunk_dual profile")
+    for sample in samples:
+        if sample.chunk_seq == int(target_seq):
+            return [sample]
+    raise RuntimeError(f"mode5 target seq out of range: {target_seq} (available chunks={len(samples)})")
+
+
+def _normalize_mode5_profile(profile: str) -> str:
+    normalized = (profile or DEFAULT_MODE5_PROFILE).strip()
+    if normalized not in ALLOWED_MODE5_PROFILES:
+        raise RuntimeError(f"unsupported mode5 profile: {normalized}")
+    return normalized
 
 
 def _benchmark_serial(tasks: list[Callable[[], object]]) -> list[tuple[bool, float]]:
@@ -682,33 +800,142 @@ def _build_mode5_task(
     client: OpenAIInsightClient,
     analysis_model: str,
     keywords: KeywordConfig,
-    pair: tuple[str, str],
+    sample: Mode5ChunkSample,
     timeout_sec: float,
     sample_sink: list[dict],
     sample_limit: int,
     sample_lock: threading.Lock,
+    chunk_result_sink: list[dict],
+    chunk_result_lock: threading.Lock,
+    trace_writer: Callable[[dict[str, Any]], None],
+    profile: str,
     source: str,
+    repeat_index: int,
 ) -> Callable[[], InsightModelResult]:
-    def task() -> InsightModelResult:
-        result = client.analyze_text(
-            analysis_model=analysis_model,
-            keywords=keywords,
-            current_text=pair[0],
-            context_text=pair[1],
-            timeout_sec=timeout_sec,
+    def trace_hook(trace_payload: dict[str, Any]) -> None:
+        trace_writer(
+            {
+                "profile": profile,
+                "source": source,
+                "repeat": repeat_index,
+                "chunk_seq": sample.chunk_seq,
+                "chunk_file": sample.chunk_file,
+                "context_chunk_count": sample.context_chunk_count,
+                "system_prompt": trace_payload.get("system_prompt", ""),
+                "user_prompt": trace_payload.get("user_prompt", ""),
+                "request_payload_snapshot": trace_payload.get("request_payload_snapshot", {}),
+                "raw_response_text": trace_payload.get("raw_response_text", ""),
+                "parsed_ok": bool(trace_payload.get("parsed_ok", False)),
+                "parsed_payload": trace_payload.get("parsed_payload", {}),
+                "error": str(trace_payload.get("error", "")).strip(),
+                "duration_sec": float(trace_payload.get("duration_sec", 0.0)),
+            }
         )
+
+    def task() -> InsightModelResult:
+        try:
+            result = _call_mode5_analyze_text(
+                client=client,
+                analysis_model=analysis_model,
+                keywords=keywords,
+                sample=sample,
+                timeout_sec=timeout_sec,
+                trace_hook=trace_hook,
+            )
+        except Exception as exc:
+            _capture_mode5_chunk_result(
+                chunk_result_sink=chunk_result_sink,
+                chunk_result_lock=chunk_result_lock,
+                sample=sample,
+                source=source,
+                repeat_index=repeat_index,
+                result=None,
+                error=str(exc).strip(),
+            )
+            raise
+
         _capture_mode5_result_sample(
             sample_sink=sample_sink,
             sample_limit=sample_limit,
             sample_lock=sample_lock,
             source=source,
-            current_text=pair[0],
-            context_text=pair[1],
+            current_text=sample.current_text,
+            context_text=sample.context_text,
             result=result,
+        )
+        _capture_mode5_chunk_result(
+            chunk_result_sink=chunk_result_sink,
+            chunk_result_lock=chunk_result_lock,
+            sample=sample,
+            source=source,
+            repeat_index=repeat_index,
+            result=result,
+            error="",
         )
         return result
 
     return task
+
+
+def _call_mode5_analyze_text(
+    *,
+    client: OpenAIInsightClient,
+    analysis_model: str,
+    keywords: KeywordConfig,
+    sample: Mode5ChunkSample,
+    timeout_sec: float,
+    trace_hook: Callable[[dict[str, Any]], None],
+) -> InsightModelResult:
+    try:
+        return client.analyze_text(
+            analysis_model=analysis_model,
+            keywords=keywords,
+            current_text=sample.current_text,
+            context_text=sample.context_text,
+            timeout_sec=timeout_sec,
+            debug_hook=trace_hook,
+        )
+    except TypeError as exc:
+        # Backward-compat for fake clients used in unit tests.
+        if "debug_hook" not in str(exc):
+            raise
+        return client.analyze_text(
+            analysis_model=analysis_model,
+            keywords=keywords,
+            current_text=sample.current_text,
+            context_text=sample.context_text,
+            timeout_sec=timeout_sec,
+        )
+
+
+def _capture_mode5_chunk_result(
+    *,
+    chunk_result_sink: list[dict],
+    chunk_result_lock: threading.Lock,
+    sample: Mode5ChunkSample,
+    source: str,
+    repeat_index: int,
+    result: InsightModelResult | None,
+    error: str,
+) -> None:
+    payload = {
+        "chunk_seq": sample.chunk_seq,
+        "chunk_file": sample.chunk_file,
+        "current_text": sample.current_text,
+        "context_text": sample.context_text,
+        "context_chunk_count": sample.context_chunk_count,
+        "important": bool(result.important) if result is not None else False,
+        "summary": (result.summary or "").strip() if result is not None else "",
+        "context_summary": (result.context_summary or "").strip() if result is not None else "",
+        "matched_terms": list(result.matched_terms or []) if result is not None else [],
+        "reason": (result.reason or "").strip() if result is not None else "",
+        "success": result is not None and not error,
+        "error": error.strip(),
+        "source": source,
+        "repeat": repeat_index,
+    }
+    with chunk_result_lock:
+        chunk_result_sink.append(payload)
 
 
 def _capture_mode5_result_sample(
@@ -735,6 +962,30 @@ def _capture_mode5_result_sample(
         if len(sample_sink) >= max(1, int(sample_limit)):
             return
         sample_sink.append(payload)
+
+
+def _sort_mode5_chunk_results(results: list[dict]) -> list[dict]:
+    source_rank = {"serial": 0, "parallel": 1}
+    return sorted(
+        results,
+        key=lambda item: (
+            int(item.get("repeat", 0)),
+            source_rank.get(str(item.get("source", "")), 9),
+            int(item.get("chunk_seq", 0)),
+        ),
+    )
+
+
+def _to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
+    return str(value)
 
 
 def _truncate_text(text: str, max_len: int) -> str:

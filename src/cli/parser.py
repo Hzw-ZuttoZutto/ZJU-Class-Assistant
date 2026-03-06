@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import os
 
+from src.simulator.models import DEFAULT_MODE5_PROFILE
+
 
 def add_common_auth_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -283,6 +285,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional seed overriding scenario seed for deterministic feed behavior",
+    )
+    simulate.add_argument(
+        "--mode5-profile",
+        choices=["all_chunks_dual", "single_chunk_dual", "all_chunks_serial_once"],
+        default=DEFAULT_MODE5_PROFILE,
+        help="Mode5 execution profile: full dual benchmark, single chunk dual benchmark, or full serial once",
+    )
+    simulate.add_argument(
+        "--mode5-target-seq",
+        type=int,
+        default=None,
+        help="Target 1-based chunk seq used when --mode5-profile=single_chunk_dual",
     )
 
     return parser

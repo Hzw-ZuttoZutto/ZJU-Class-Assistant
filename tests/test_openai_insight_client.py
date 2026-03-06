@@ -157,6 +157,60 @@ class OpenAIInsightClientTests(unittest.TestCase):
             )
         self.assertEqual(captured.get("base_url"), "https://aihubmix.com/v1")
 
+    def test_analyze_debug_hook_captures_each_attempt(self) -> None:
+        class _Resp:
+            def __init__(self, text: str, *, status: str = "", reason: str = "") -> None:
+                self.output_text = text
+                self._status = status
+                self._reason = reason
+
+            def model_dump(self) -> dict:
+                payload: dict = {"output_text": self.output_text}
+                if self._status:
+                    payload["status"] = self._status
+                    payload["incomplete_details"] = {"reason": self._reason}
+                return payload
+
+        class _DebugResponses:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) == 1:
+                    return _Resp("not-json", status="incomplete", reason="max_output_tokens")
+                return _Resp(
+                    '{"important": false, "summary": "当前没有什么重要内容", '
+                    '"context_summary": "无重要内容", "matched_terms": [], "reason": "none"}'
+                )
+
+        class _DebugOpenAI:
+            def __init__(self, *, api_key: str, timeout: float) -> None:
+                self.audio = _FakeAudio()
+                self.responses = _DebugResponses()
+
+        events: list[dict] = []
+        with mock.patch("src.live.insight.openai_client._load_openai_cls", return_value=_DebugOpenAI):
+            client = OpenAIInsightClient(api_key="k", timeout_sec=12.0)
+            result = client.analyze_text(
+                analysis_model="gpt-5-mini",
+                keywords=KeywordConfig(),
+                current_text="课程继续",
+                context_text="无历史文本块",
+                timeout_sec=2.0,
+                debug_hook=events.append,
+            )
+        self.assertFalse(result.important)
+        self.assertEqual(len(events), 2)
+        self.assertFalse(events[0]["parsed_ok"])
+        self.assertIn("not-json", events[0]["raw_response_text"])
+        self.assertTrue(events[1]["parsed_ok"])
+        self.assertIn("request_payload_snapshot", events[1])
+        self.assertGreater(
+            int(events[1]["request_payload_snapshot"].get("max_output_tokens", 0)),
+            int(events[0]["request_payload_snapshot"].get("max_output_tokens", 0)),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

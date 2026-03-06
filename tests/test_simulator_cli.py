@@ -31,6 +31,8 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.rt_stage_timeout_sec, 60.0)
         self.assertEqual(args.rt_retry_count, 2)
         self.assertIsNone(args.seed)
+        self.assertEqual(args.mode5_profile, "all_chunks_dual")
+        self.assertIsNone(args.mode5_target_seq)
 
     def test_simulate_args_custom(self) -> None:
         parser = build_parser()
@@ -67,6 +69,10 @@ class SimulatorCliTests(unittest.TestCase):
                 "1",
                 "--seed",
                 "123",
+                "--mode5-profile",
+                "single_chunk_dual",
+                "--mode5-target-seq",
+                "4",
             ]
         )
         self.assertEqual(args.mode, 5)
@@ -81,6 +87,8 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.rt_stage_timeout_sec, 40.0)
         self.assertEqual(args.rt_retry_count, 1)
         self.assertEqual(args.seed, 123)
+        self.assertEqual(args.mode5_profile, "single_chunk_dual")
+        self.assertEqual(args.mode5_target_seq, 4)
 
 
 if __name__ == "__main__":
