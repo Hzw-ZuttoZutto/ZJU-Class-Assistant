@@ -83,7 +83,7 @@ class Mode2Mode3Tests(unittest.TestCase):
                 feed=FeedConfig(mode="burst"),
                 translation_rules=[StageControlRule(seq=2, status="timeout")],
             )
-            _ = run_mode(
+            result = run_mode(
                 mode=SimulatorMode.MODE2,
                 scenario=scenario,
                 chunk_paths=chunks,
@@ -102,6 +102,9 @@ class Mode2Mode3Tests(unittest.TestCase):
             )
             self.assertEqual(len(processor.calls), 3)
             self.assertEqual(processor.calls[1]["transcript_status"], "transcript_drop_timeout")
+            trace_file = Path(result.summary["trace_file"])
+            self.assertTrue(trace_file.exists())
+            self.assertEqual(len(trace_file.read_text(encoding="utf-8").splitlines()), 3)
         finally:
             td.cleanup()
 
@@ -117,7 +120,7 @@ class Mode2Mode3Tests(unittest.TestCase):
                 history_rules=[HistoryRule(seq=2, visibility="111111110011001100", hold_sec=30.0)],
                 mode3_variant="controlled_history",
             )
-            _ = run_mode(
+            result = run_mode(
                 mode=SimulatorMode.MODE3,
                 scenario=scenario,
                 chunk_paths=chunks,
@@ -137,6 +140,9 @@ class Mode2Mode3Tests(unittest.TestCase):
             self.assertEqual(processor.calls[1]["history_visibility_mask"], "111111110011001100")
             # hold_sec keeps mask active for following chunks
             self.assertEqual(processor.calls[2]["history_visibility_mask"], "111111110011001100")
+            trace_file = Path(result.summary["trace_file"])
+            self.assertTrue(trace_file.exists())
+            self.assertEqual(len(trace_file.read_text(encoding="utf-8").splitlines()), 3)
         finally:
             td.cleanup()
 

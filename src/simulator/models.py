@@ -95,6 +95,62 @@ class BenchmarkConfig:
 
 
 @dataclass
+class Mode2ValidationPrecompute:
+    stt_failures: int | None = None
+    analysis_failures: int | None = None
+    stt_misses: int | None = None
+    stt_computed: int | None = None
+    analysis_misses: int | None = None
+    analysis_computed: int | None = None
+
+
+@dataclass
+class Mode2ValidationRun:
+    emitted_chunks: int | None = None
+    translation_rules_applied: int | None = None
+    analysis_rules_applied: int | None = None
+    mode3_variant: str = ""
+
+
+@dataclass
+class Mode2ValidationSeq:
+    seq: int
+    transcript_status: str = ""
+    insight_present: bool | None = None
+    insight_status: str = ""
+    context_chunk_count: int | None = None
+    history_visibility_mask: str = ""
+    forced_text_exact: str = ""
+    forced_text_applied: bool | None = None
+    forced_result_applied: bool | None = None
+
+
+@dataclass
+class Mode2ValidationConfig:
+    strict_fail: bool = False
+    precompute: Mode2ValidationPrecompute = field(default_factory=Mode2ValidationPrecompute)
+    run: Mode2ValidationRun = field(default_factory=Mode2ValidationRun)
+    seq: list[Mode2ValidationSeq] = field(default_factory=list)
+
+    def has_checks(self) -> bool:
+        p = self.precompute
+        r = self.run
+        return bool(
+            self.seq
+            or p.stt_failures is not None
+            or p.analysis_failures is not None
+            or p.stt_misses is not None
+            or p.stt_computed is not None
+            or p.analysis_misses is not None
+            or p.analysis_computed is not None
+            or r.emitted_chunks is not None
+            or r.translation_rules_applied is not None
+            or r.analysis_rules_applied is not None
+            or bool(r.mode3_variant)
+        )
+
+
+@dataclass
 class Mode6CaseConfig:
     request_timeout_sec: float | None = None
     stage_timeout_sec: float | None = None
@@ -186,6 +242,7 @@ class Scenario:
     translation_rules: list[StageControlRule] = field(default_factory=list)
     analysis_rules: list[StageControlRule] = field(default_factory=list)
     history_rules: list[HistoryRule] = field(default_factory=list)
+    mode2_validation: Mode2ValidationConfig = field(default_factory=Mode2ValidationConfig)
     precompute: PrecomputeConfig = field(default_factory=PrecomputeConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     mode6: Mode6Config = field(default_factory=Mode6Config)

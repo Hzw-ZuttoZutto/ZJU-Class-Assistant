@@ -17,6 +17,10 @@ from src.simulator.models import (
     FeedDelayBackfillRule,
     FeedDuplicateRule,
     HistoryRule,
+    Mode2ValidationConfig,
+    Mode2ValidationPrecompute,
+    Mode2ValidationRun,
+    Mode2ValidationSeq,
     Mode6Case,
     Mode6CaseConfig,
     Mode6Config,
@@ -47,6 +51,7 @@ def load_scenario(path: Path, *, expected_mode: SimulatorMode | None = None) -> 
     feed = _parse_feed(payload.get("feed"))
     translation_rules, analysis_rules = _parse_controls(payload.get("control"))
     history_rules = _parse_history(payload.get("history"))
+    mode2_validation = _parse_mode2_validation(payload.get("validation"), mode=mode)
     mode6 = _parse_mode6(payload.get("mode6"))
 
     precompute_payload = payload.get("precompute") if isinstance(payload.get("precompute"), dict) else {}
@@ -73,6 +78,7 @@ def load_scenario(path: Path, *, expected_mode: SimulatorMode | None = None) -> 
         translation_rules=translation_rules,
         analysis_rules=analysis_rules,
         history_rules=history_rules,
+        mode2_validation=mode2_validation,
         precompute=precompute,
         benchmark=benchmark,
         mode6=mode6,
@@ -209,6 +215,61 @@ def _parse_history(payload: Any) -> list[HistoryRule]:
         hold_sec = max(0.0, float(item.get("hold_sec", 0.0)))
         out.append(HistoryRule(seq=seq, visibility=visibility, hold_sec=hold_sec))
     return out
+
+
+def _parse_mode2_validation(payload: Any, *, mode: SimulatorMode) -> Mode2ValidationConfig:
+    if mode not in {SimulatorMode.MODE2, SimulatorMode.MODE3} or not isinstance(payload, dict):
+        return Mode2ValidationConfig()
+
+    strict_fail = bool(_coerce_opt_bool(payload.get("strict_fail")) or False)
+
+    precompute_payload = payload.get("precompute") if isinstance(payload.get("precompute"), dict) else {}
+    precompute = Mode2ValidationPrecompute(
+        stt_failures=_coerce_opt_non_negative_int(precompute_payload.get("stt_failures")),
+        analysis_failures=_coerce_opt_non_negative_int(precompute_payload.get("analysis_failures")),
+        stt_misses=_coerce_opt_non_negative_int(precompute_payload.get("stt_misses")),
+        stt_computed=_coerce_opt_non_negative_int(precompute_payload.get("stt_computed")),
+        analysis_misses=_coerce_opt_non_negative_int(precompute_payload.get("analysis_misses")),
+        analysis_computed=_coerce_opt_non_negative_int(precompute_payload.get("analysis_computed")),
+    )
+
+    run_payload = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    run = Mode2ValidationRun(
+        emitted_chunks=_coerce_opt_non_negative_int(run_payload.get("emitted_chunks")),
+        translation_rules_applied=_coerce_opt_non_negative_int(run_payload.get("translation_rules_applied")),
+        analysis_rules_applied=_coerce_opt_non_negative_int(run_payload.get("analysis_rules_applied")),
+        mode3_variant=str(run_payload.get("mode3_variant", "") or "").strip(),
+    )
+
+    seq_expectations: list[Mode2ValidationSeq] = []
+    for idx, item in enumerate(_coerce_list(payload.get("seq")), start=1):
+        if not isinstance(item, dict):
+            continue
+        seq = _coerce_opt_non_negative_int(item.get("seq"))
+        if seq is None or seq <= 0:
+            raise ValueError(f"validation.seq[{idx}] must provide seq >= 1")
+        history_visibility_mask = str(item.get("history_visibility_mask", "") or "").strip()
+        if history_visibility_mask:
+            validate_visibility_mask(history_visibility_mask)
+        seq_expectations.append(
+            Mode2ValidationSeq(
+                seq=seq,
+                transcript_status=str(item.get("transcript_status", "") or "").strip(),
+                insight_present=_coerce_opt_bool(item.get("insight_present")),
+                insight_status=str(item.get("insight_status", "") or "").strip(),
+                context_chunk_count=_coerce_opt_non_negative_int(item.get("context_chunk_count")),
+                history_visibility_mask=history_visibility_mask,
+                forced_text_exact=str(item.get("forced_text_exact", "") or ""),
+                forced_text_applied=_coerce_opt_bool(item.get("forced_text_applied")),
+                forced_result_applied=_coerce_opt_bool(item.get("forced_result_applied")),
+            )
+        )
+    return Mode2ValidationConfig(
+        strict_fail=strict_fail,
+        precompute=precompute,
+        run=run,
+        seq=seq_expectations,
+    )
 
 
 def _parse_mode6(payload: Any) -> Mode6Config:
@@ -465,3 +526,12 @@ def _coerce_opt_str_list(value: Any) -> list[str] | None:
         if text:
             out.append(text)
     return out
+
+
+def _coerce_opt_non_negative_int(value: Any) -> int | None:
+    result = _coerce_opt_int(value)
+    if result is None:
+        return None
+    if result < 0:
+        raise ValueError("validation expects non-negative integers")
+    return result

@@ -10,6 +10,7 @@ from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore
+from src.simulator.mode2_validation import run_mode2_validation
 from src.simulator.mode_runner import run_mode
 from src.simulator.models import (
     ALLOWED_MODE5_PROFILES,
@@ -157,6 +158,7 @@ def run_simulate(args: argparse.Namespace) -> int:
     )
 
     cache_store = SimulationCacheStore(runtime.sim_root / "cache")
+    precompute_manifest: dict | None = None
 
     if mode in {SimulatorMode.MODE2, SimulatorMode.MODE3}:
         if client is None:
@@ -164,7 +166,7 @@ def run_simulate(args: argparse.Namespace) -> int:
             return 1
         workers = max(1, int(scenario.precompute.workers or runtime.precompute_workers))
         print(f"[simulate] precompute mode{int(mode)} started workers={workers}")
-        manifest = run_precompute(
+        precompute_manifest = run_precompute(
             chunk_paths=chunk_paths,
             cache_store=cache_store,
             client=client,
@@ -176,7 +178,7 @@ def run_simulate(args: argparse.Namespace) -> int:
             workers=workers,
             log_fn=print,
         )
-        write_precompute_manifest(run_session_dir / "precompute_manifest.json", manifest)
+        write_precompute_manifest(run_session_dir / "precompute_manifest.json", precompute_manifest)
 
     try:
         result = run_mode(
@@ -211,10 +213,35 @@ def run_simulate(args: argparse.Namespace) -> int:
         "run_session_dir": run_session_dir.as_posix(),
         "summary": result.summary,
     }
-    (run_session_dir / "simulate_report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
 
+    strict_failed = False
+    if mode in {SimulatorMode.MODE2, SimulatorMode.MODE3} and (
+        scenario.mode2_validation.strict_fail or scenario.mode2_validation.has_checks()
+    ):
+        validation = run_mode2_validation(
+            scenario=scenario,
+            run_summary=result.summary,
+            precompute_manifest=precompute_manifest,
+            run_session_dir=run_session_dir,
+        )
+        validation_key = "mode2_validation" if mode == SimulatorMode.MODE2 else "mode3_validation"
+        report["summary"][validation_key] = {
+            "strict_fail": bool(validation.get("strict_fail", False)),
+            "passed": bool(validation.get("passed", False)),
+            "failure_count": int(validation.get("failure_count", 0)),
+            "report_file": str(validation.get("report_file", "")),
+        }
+        if not bool(validation.get("passed", False)) and bool(validation.get("strict_fail", False)):
+            failures = validation.get("failures", [])
+            if failures:
+                print(f"[simulate] mode{int(mode)} validation first failure: {failures[0]}")
+            strict_failed = True
+
+    (run_session_dir / "simulate_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if strict_failed:
+        print(f"[simulate] mode{int(mode)} validation failed (strict), output={run_session_dir}")
+        return 1
     print(f"[simulate] completed mode={int(mode)} output={run_session_dir}")
     return 0
 

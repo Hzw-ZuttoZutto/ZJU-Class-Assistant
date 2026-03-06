@@ -80,6 +80,7 @@ def run_mode(
             scenario=scenario,
             chunk_paths=chunk_paths,
             chunk_seconds=chunk_seconds,
+            output_dir=output_dir,
             processor=processor,
             cache_store=cache_store,
             keywords=keywords,
@@ -96,6 +97,7 @@ def run_mode(
             scenario=scenario,
             chunk_paths=chunk_paths,
             chunk_seconds=chunk_seconds,
+            output_dir=output_dir,
             processor=processor,
             cache_store=cache_store,
             keywords=keywords,
@@ -189,6 +191,7 @@ def _run_mode2_or_3(
     scenario: Scenario,
     chunk_paths: list[Path],
     chunk_seconds: int,
+    output_dir: Path,
     processor: InsightStageProcessor,
     cache_store: SimulationCacheStore,
     keywords: KeywordConfig,
@@ -203,6 +206,17 @@ def _run_mode2_or_3(
     keyword_hash = keywords_hash(keywords)
     chunk_sha_by_path = {path: file_sha256(path) for path in chunk_paths}
 
+    trace_path = output_dir / f"mode{int(mode)}_trace.jsonl"
+    if mode in {SimulatorMode.MODE2, SimulatorMode.MODE3}:
+        trace_path.write_text("", encoding="utf-8")
+
+    def _write_trace(payload: dict[str, Any]) -> None:
+        if mode not in {SimulatorMode.MODE2, SimulatorMode.MODE3}:
+            return
+        with trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False))
+            handle.write("\n")
+
     elapsed_sec = 0.0
     active_history_mask = ""
     active_history_until = -1.0
@@ -211,6 +225,7 @@ def _run_mode2_or_3(
     applied_analysis_rules = 0
 
     for out_seq, event in enumerate(events, start=1):
+        chunk_started = time.monotonic()
         if event.wait_before_sec > 0:
             time.sleep(event.wait_before_sec)
             elapsed_sec += event.wait_before_sec
@@ -248,6 +263,7 @@ def _run_mode2_or_3(
             chunk_seconds=chunk_seconds,
         )
         cached_text = cache_store.load_stt(stt_key) or ""
+        stt_cache_hit = bool(cached_text)
 
         transcript_text = forced_text or cached_text
         if transcript_status == "ok" and not transcript_text:
@@ -260,6 +276,7 @@ def _run_mode2_or_3(
         analysis_error = ""
         analysis_attempt = 1
         forced_result: dict | None = None
+        analysis_cache_hit = False
         if a_rule is not None:
             applied_analysis_rules += 1
             analysis_delay = max(0.0, float(a_rule.delay_sec))
@@ -289,6 +306,7 @@ def _run_mode2_or_3(
                     chunk_seconds=chunk_seconds,
                 )
                 analysis_payload = cache_store.load_analysis(analysis_key)
+                analysis_cache_hit = isinstance(analysis_payload, dict)
                 if analysis_payload is None:
                     analysis_status = "analysis_drop_error"
                     analysis_error = "analysis cache missing for chunk"
@@ -324,12 +342,35 @@ def _run_mode2_or_3(
             analysis_attempt=analysis_attempt,
             history_visibility_mask=history_mask,
         )
+        chunk_elapsed_sec = time.monotonic() - chunk_started
+        _write_trace(
+            {
+                "mode": int(mode),
+                "out_seq": out_seq,
+                "source_seq": source_seq,
+                "chunk_file": event.chunk_path.name,
+                "wait_before_sec": round(float(event.wait_before_sec), 6),
+                "transcript_status": transcript_status,
+                "transcript_error": transcript_error,
+                "analysis_status": analysis_status,
+                "analysis_error": analysis_error,
+                "translation_rule_applied": bool(t_rule is not None),
+                "analysis_rule_applied": bool(a_rule is not None),
+                "forced_text_applied": bool(forced_text),
+                "forced_result_applied": bool(forced_result is not None),
+                "stt_cache_hit": stt_cache_hit,
+                "analysis_cache_hit": analysis_cache_hit,
+                "history_visibility_mask": history_mask or "",
+                "mode3_variant": scenario.mode3_variant if mode == SimulatorMode.MODE3 else "",
+                "chunk_elapsed_sec": round(chunk_elapsed_sec, 6),
+            }
+        )
 
     log_fn(
         f"[simulate] mode{int(mode)} finished: emitted={len(events)} "
         f"translation_rules={applied_translation_rules} analysis_rules={applied_analysis_rules}"
     )
-    return {
+    summary = {
         "mode": int(mode),
         "emitted_chunks": len(events),
         "feed_mode": scenario.feed.mode,
@@ -337,6 +378,9 @@ def _run_mode2_or_3(
         "analysis_rules_applied": applied_analysis_rules,
         "mode3_variant": scenario.mode3_variant if mode == SimulatorMode.MODE3 else "",
     }
+    if mode in {SimulatorMode.MODE2, SimulatorMode.MODE3}:
+        summary["trace_file"] = trace_path.as_posix()
+    return summary
 
 
 def _run_mode4_benchmark(

@@ -1,0 +1,46 @@
+mode: 2
+name: mode2_full_validation
+seed: 7
+dataset:
+  include_glob: "*.mp3"
+feed:
+  mode: burst
+control:
+  translation:
+    rules:
+      - seq: 2
+        status: timeout
+        delay_sec: 2.5
+      - seq: 4
+        status: ok
+        forced_text: "这是一个强制翻译文本，用于模拟命中关键词微积分"
+  analysis:
+    rules: []
+history:
+  by_seq: []
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 1
+validation:
+  strict_fail: true
+  precompute:
+    stt_failures: 0
+    analysis_failures: 0
+    stt_misses: 12
+    stt_computed: 12
+    analysis_misses: 12
+    analysis_computed: 12
+  run:
+    emitted_chunks: 12
+    translation_rules_applied: 2
+    analysis_rules_applied: 0
+  seq:
+    - seq: 2
+      transcript_status: transcript_drop_timeout
+      insight_present: false
+    - seq: 4
+      transcript_status: ok
+      insight_present: true
+      forced_text_exact: "这是一个强制翻译文本，用于模拟命中关键词微积分"

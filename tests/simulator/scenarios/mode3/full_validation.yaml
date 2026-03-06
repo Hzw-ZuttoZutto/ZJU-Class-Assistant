@@ -1,0 +1,72 @@
+mode: 3
+name: mode3_full_validation
+seed: 7
+mode3_variant: controlled_history
+dataset:
+  include_glob: "*.mp3"
+feed:
+  mode: burst
+control:
+  translation:
+    rules: []
+  analysis:
+    rules:
+      - seq: 3
+        status: timeout
+        delay_sec: 3.0
+      - seq: 5
+        status: ok
+        forced_result:
+          important: true
+          summary: "强制分析返回：当前内容为考试重点"
+          context_summary: "历史状态被手动控制"
+          matched_terms: ["考试", "重点"]
+          reason: "forced_result"
+history:
+  by_seq:
+    - seq: 4
+      visibility: "111111110011001100"
+      hold_sec: 20
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 1
+validation:
+  strict_fail: true
+  precompute:
+    stt_failures: 0
+    analysis_failures: 0
+    stt_misses: 12
+    stt_computed: 12
+    analysis_misses: 12
+    analysis_computed: 12
+  run:
+    emitted_chunks: 12
+    translation_rules_applied: 0
+    analysis_rules_applied: 2
+    mode3_variant: controlled_history
+  seq:
+    - seq: 3
+      transcript_status: ok
+      insight_status: analysis_drop_timeout
+      context_chunk_count: 2
+      history_visibility_mask: ""
+      forced_result_applied: false
+    - seq: 4
+      transcript_status: ok
+      insight_status: ok
+      context_chunk_count: 1
+      history_visibility_mask: "111111110011001100"
+      forced_result_applied: false
+    - seq: 5
+      transcript_status: ok
+      insight_status: ok
+      context_chunk_count: 2
+      history_visibility_mask: "111111110011001100"
+      forced_result_applied: true
+    - seq: 8
+      transcript_status: ok
+      insight_status: ok
+      context_chunk_count: 3
+      history_visibility_mask: "111111110011001100"
