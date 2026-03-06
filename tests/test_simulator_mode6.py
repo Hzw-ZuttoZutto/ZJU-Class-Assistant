@@ -11,6 +11,7 @@ from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore
 from src.simulator.mode_runner import run_mode
 from src.simulator.models import (
+    Mode6AnalysisStep,
     Mode6Case,
     Mode6CaseConfig,
     Mode6Config,
@@ -65,6 +66,8 @@ class Mode6RunnerTests(unittest.TestCase):
                     stt_status="ok",
                     stt_attempts=1,
                     analysis_called=True,
+                    analysis_status="ok",
+                    analysis_attempts=1,
                     context_reason="full18_ready",
                     context_chunk_count=4,
                     missing_ranges=[],
@@ -113,7 +116,9 @@ class Mode6RunnerTests(unittest.TestCase):
                 ],
                 expected=Mode6Expected(
                     stt_status="ok",
-                    stt_attempts=2,
+                    stt_attempts=1,
+                    analysis_called=True,
+                    analysis_attempts=2,
                 ),
             )
             scenario = Scenario(
@@ -141,6 +146,60 @@ class Mode6RunnerTests(unittest.TestCase):
             self.assertEqual(result.summary["case_count"], 1)
             self.assertEqual(result.summary["fail_count"], 1)
             self.assertFalse(result.summary["cases"][0]["passed"])
+            self.assertIn("analysis_attempts", ";".join(result.summary["cases"][0]["failures"]))
+
+    def test_mode6_analysis_timeout_then_success_with_elapsed_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            history = [Mode6HistoryItem(seq=idx, text=f"h{idx}") for idx in range(1, 19)]
+            case = Mode6Case(
+                id="analysis_timeout_then_ok",
+                chunk_seq=19,
+                config=Mode6CaseConfig(
+                    request_timeout_sec=15.0,
+                    stage_timeout_sec=60.0,
+                    retry_count=4,
+                ),
+                stt_script=[Mode6SttStep(type="ok", text="ok")],
+                analysis_script=[
+                    Mode6AnalysisStep(type="timeout_request", error="first timeout"),
+                    Mode6AnalysisStep(type="ok"),
+                ],
+                history_initial=history,
+                expected=Mode6Expected(
+                    stt_status="ok",
+                    stt_attempts=1,
+                    analysis_called=True,
+                    analysis_status="ok",
+                    analysis_attempts=2,
+                    analysis_elapsed_sec_lte=20.0,
+                    context_reason="full18_ready",
+                    context_chunk_count=18,
+                ),
+            )
+            scenario = Scenario(
+                mode=SimulatorMode.MODE6,
+                name="m6-analysis-timeout-ok",
+                mode6=Mode6Config(check_interval_sec=0.2, cases=[case]),
+            )
+            result = run_mode(
+                mode=SimulatorMode.MODE6,
+                scenario=scenario,
+                chunk_paths=[],
+                chunk_seconds=10,
+                processor=self._base_processor(base),
+                cache_store=SimulationCacheStore(base / "cache"),
+                client=None,
+                keywords=KeywordConfig(),
+                stt_model="stt",
+                analysis_model="ana",
+                request_timeout_sec=8.0,
+                precompute_workers=1,
+                output_dir=base,
+                log_fn=lambda _: None,
+                seed_override=1,
+            )
+            self.assertEqual(result.summary["pass_count"], 1)
 
     def test_run_simulate_mode6_is_offline_and_strict(self) -> None:
         parser = build_parser()

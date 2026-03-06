@@ -47,6 +47,7 @@ class _Mode6ScriptClient:
         self.clock = clock
         self.trace_writer = trace_writer
         self._stt_index = 0
+        self._analysis_index = 0
         self.stt_calls = 0
         self.analyze_calls = 0
         self.last_context_text = ""
@@ -92,21 +93,41 @@ class _Mode6ScriptClient:
     ) -> InsightModelResult:
         self.analyze_calls += 1
         self.last_context_text = context_text
+        if self._analysis_index >= len(self.case.analysis_script):
+            raise RuntimeError("mode6 analysis_script exhausted")
+
+        step = self.case.analysis_script[self._analysis_index]
+        self._analysis_index += 1
+        step_type = step.normalized_type()
         self.trace_writer(
             {
                 "case_id": self.case.id,
-                "event": "analysis_call",
+                "event": "analysis_attempt",
                 "attempt": self.analyze_calls,
+                "step_type": step_type,
+                "timeout_sec": round(float(timeout_sec), 6),
+                "delay_sec": round(float(step.delay_sec), 6),
                 "context_len": len(context_text),
             }
         )
-        return InsightModelResult(
-            important=False,
-            summary=f"mode6-{self.case.id}",
-            context_summary="mode6",
-            matched_terms=[],
-            reason="mode6",
-        )
+
+        if step.delay_sec > 0:
+            self.clock.sleep(step.delay_sec)
+
+        if step_type == "ok":
+            payload = step.result if isinstance(step.result, dict) else {}
+            default_summary = f"mode6-{self.case.id}"
+            return InsightModelResult(
+                important=bool(payload.get("important", False)),
+                summary=str(payload.get("summary", default_summary) or default_summary).strip(),
+                context_summary=str(payload.get("context_summary", "mode6") or "mode6").strip(),
+                matched_terms=_coerce_str_list(payload.get("matched_terms")),
+                reason=str(payload.get("reason", "mode6") or "mode6").strip(),
+            )
+        if step_type == "timeout_request":
+            self.clock.sleep(max(0.0, float(timeout_sec)))
+            raise TimeoutError(step.error or "scripted timeout")
+        raise RuntimeError(step.error or "scripted error")
 
 
 class _Mode6Processor(InsightStageProcessor):
@@ -137,6 +158,9 @@ class _Mode6Processor(InsightStageProcessor):
         self._seen_history_seqs: set[int] = set()
         self.last_stt_status = ""
         self.last_stt_attempts = 0
+        self.last_analysis_status = ""
+        self.last_analysis_attempts = 0
+        self.last_analysis_elapsed_sec = 0.0
 
         for item in case.history_initial:
             self._append_history_chunk(seq=item.seq, text=item.text, source="initial")
@@ -239,6 +263,40 @@ class _Mode6Processor(InsightStageProcessor):
             }
         )
         return history
+
+    def analyze_with_retry(
+        self,
+        *,
+        current_text: str,
+        context_text: str,
+    ) -> tuple[InsightModelResult | None, str, int, str]:
+        started = self.clock.monotonic()
+        self.trace_writer(
+            {
+                "case_id": self.case.id,
+                "event": "analysis_retry_start",
+                "at_sec": round(started, 6),
+            }
+        )
+        result, status, attempts, error = super().analyze_with_retry(
+            current_text=current_text,
+            context_text=context_text,
+        )
+        elapsed = self.clock.monotonic() - started
+        self.last_analysis_status = status
+        self.last_analysis_attempts = attempts
+        self.last_analysis_elapsed_sec = elapsed
+        self.trace_writer(
+            {
+                "case_id": self.case.id,
+                "event": "analysis_retry_end",
+                "status": status,
+                "attempts": attempts,
+                "elapsed_sec": round(elapsed, 6),
+                "error": error,
+            }
+        )
+        return result, status, attempts, error
 
     @property
     def last_context_reason(self) -> str:
@@ -344,6 +402,9 @@ def _run_one_case(
         "stt_status": processor.last_stt_status,
         "stt_attempts": int(processor.last_stt_attempts),
         "analysis_called": bool(client.analyze_calls > 0),
+        "analysis_status": processor.last_analysis_status,
+        "analysis_attempts": int(processor.last_analysis_attempts),
+        "analysis_elapsed_sec": round(float(processor.last_analysis_elapsed_sec), 6),
         "context_reason": processor.last_context_reason,
         "context_chunk_count": int(processor.last_insight_payload.get("context_chunk_count", 0)),
         "missing_ranges": _extract_missing_ranges(client.last_context_text),
@@ -362,6 +423,9 @@ def _run_one_case(
             "stt_status": case.expected.stt_status,
             "stt_attempts": case.expected.stt_attempts,
             "analysis_called": case.expected.analysis_called,
+            "analysis_status": case.expected.analysis_status,
+            "analysis_attempts": case.expected.analysis_attempts,
+            "analysis_elapsed_sec_lte": case.expected.analysis_elapsed_sec_lte,
             "context_reason": case.expected.context_reason,
             "context_chunk_count": case.expected.context_chunk_count,
             "missing_ranges": case.expected.missing_ranges,
@@ -424,6 +488,23 @@ def _evaluate_case(*, case: Mode6Case, actual: dict[str, Any]) -> list[str]:
         failures.append(
             f"analysis_called expected={bool(expected.analysis_called)} actual={bool(actual.get('analysis_called'))}"
         )
+    if expected.analysis_status and actual.get("analysis_status") != expected.analysis_status:
+        failures.append(
+            f"analysis_status expected={expected.analysis_status} actual={actual.get('analysis_status')}"
+        )
+    if expected.analysis_attempts is not None and int(actual.get("analysis_attempts", 0)) != int(
+        expected.analysis_attempts
+    ):
+        failures.append(
+            f"analysis_attempts expected={expected.analysis_attempts} actual={actual.get('analysis_attempts')}"
+        )
+    if expected.analysis_elapsed_sec_lte is not None and float(actual.get("analysis_elapsed_sec", 0.0)) > float(
+        expected.analysis_elapsed_sec_lte
+    ) + 1e-9:
+        failures.append(
+            "analysis_elapsed_sec_lte "
+            f"expected<={expected.analysis_elapsed_sec_lte} actual={actual.get('analysis_elapsed_sec')}"
+        )
     if expected.context_reason and actual.get("context_reason") != expected.context_reason:
         failures.append(f"context_reason expected={expected.context_reason} actual={actual.get('context_reason')}")
     if expected.context_chunk_count is not None and int(actual.get("context_chunk_count", 0)) != int(
@@ -441,6 +522,17 @@ def _evaluate_case(*, case: Mode6Case, actual: dict[str, Any]) -> list[str]:
 
 _ORIG_STAGE_MONOTONIC = None
 _ORIG_STAGE_SLEEP = None
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
 
 
 def _patch_stage_processor_time(*, clock: _VirtualClock) -> None:

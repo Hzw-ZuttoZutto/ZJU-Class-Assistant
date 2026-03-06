@@ -128,6 +128,12 @@ class ScenarioLoaderTests(unittest.TestCase):
                             - type: timeout_request
                             - type: ok
                               text: done
+                          analysis_script:
+                            - type: timeout_request
+                            - type: ok
+                              result:
+                                important: true
+                                summary: s1
                           history:
                             initial:
                               - seq: 15
@@ -146,6 +152,9 @@ class ScenarioLoaderTests(unittest.TestCase):
                             stt_status: ok
                             stt_attempts: 2
                             analysis_called: true
+                            analysis_status: ok
+                            analysis_attempts: 2
+                            analysis_elapsed_sec_lte: 20
                             context_reason: full18_ready
                             context_chunk_count: 5
                             missing_ranges: []
@@ -162,6 +171,11 @@ class ScenarioLoaderTests(unittest.TestCase):
             self.assertEqual(case.chunk_seq, 19)
             self.assertEqual(case.stt_script[0].normalized_type(), "timeout_request")
             self.assertEqual(case.stt_script[1].text, "done")
+            self.assertEqual(case.analysis_script[0].normalized_type(), "timeout_request")
+            self.assertEqual(case.analysis_script[1].result["summary"], "s1")
+            self.assertEqual(case.expected.analysis_status, "ok")
+            self.assertEqual(case.expected.analysis_attempts, 2)
+            self.assertEqual(case.expected.analysis_elapsed_sec_lte, 20.0)
             self.assertEqual(case.expected.context_reason, "full18_ready")
 
     def test_reject_mode6_duplicate_history_seq(self) -> None:
@@ -186,6 +200,76 @@ class ScenarioLoaderTests(unittest.TestCase):
                               - at_sec: 0.2
                                 seq: 1
                                 text: b
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                _ = load_scenario(path, expected_mode=SimulatorMode.MODE6)
+
+    def test_reject_mode6_invalid_analysis_script_type(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m6_bad_type.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 6
+                    mode6:
+                      cases:
+                        - id: bad
+                          chunk_seq: 10
+                          stt_script:
+                            - type: ok
+                              text: hi
+                          analysis_script:
+                            - type: broken
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                _ = load_scenario(path, expected_mode=SimulatorMode.MODE6)
+
+    def test_reject_mode6_negative_analysis_delay(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m6_bad_delay.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 6
+                    mode6:
+                      cases:
+                        - id: bad
+                          chunk_seq: 10
+                          stt_script:
+                            - type: ok
+                              text: hi
+                          analysis_script:
+                            - type: ok
+                              delay_sec: -0.1
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                _ = load_scenario(path, expected_mode=SimulatorMode.MODE6)
+
+    def test_reject_mode6_invalid_expected_analysis_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m6_bad_expected.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 6
+                    mode6:
+                      cases:
+                        - id: bad
+                          chunk_seq: 10
+                          stt_script:
+                            - type: ok
+                              text: hi
+                          expected:
+                            analysis_status: unknown
                     """
                 ).strip(),
                 encoding="utf-8",

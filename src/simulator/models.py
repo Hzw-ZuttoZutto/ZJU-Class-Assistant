@@ -22,7 +22,9 @@ ALLOWED_CONTROL_STATUS = {"ok", "timeout", "error", "drop"}
 ALLOWED_MODE5_PROFILES = {"all_chunks_dual", "single_chunk_dual", "all_chunks_serial_once"}
 DEFAULT_MODE5_PROFILE = "all_chunks_dual"
 ALLOWED_MODE6_STT_STEP_TYPES = {"ok", "error", "timeout_request"}
+ALLOWED_MODE6_ANALYSIS_STEP_TYPES = {"ok", "error", "timeout_request"}
 ALLOWED_MODE6_CONTEXT_REASONS = {"full18_ready", "timeout_wait_full18", "timeout_wait_recent4"}
+ALLOWED_MODE6_ANALYSIS_STATUSES = {"ok", "analysis_drop_timeout", "analysis_drop_error"}
 
 
 @dataclass
@@ -116,6 +118,18 @@ class Mode6SttStep:
 
 
 @dataclass
+class Mode6AnalysisStep:
+    type: str = "ok"
+    error: str = ""
+    delay_sec: float = 0.0
+    result: dict = field(default_factory=dict)
+
+    def normalized_type(self) -> str:
+        text = (self.type or "ok").strip().lower()
+        return text if text in ALLOWED_MODE6_ANALYSIS_STEP_TYPES else "ok"
+
+
+@dataclass
 class Mode6HistoryItem:
     seq: int
     text: str
@@ -133,9 +147,16 @@ class Mode6Expected:
     stt_status: str = ""
     stt_attempts: int | None = None
     analysis_called: bool | None = None
+    analysis_status: str = ""
+    analysis_attempts: int | None = None
+    analysis_elapsed_sec_lte: float | None = None
     context_reason: str = ""
     context_chunk_count: int | None = None
     missing_ranges: list[str] | None = None
+
+
+def _default_mode6_analysis_script() -> list[Mode6AnalysisStep]:
+    return [Mode6AnalysisStep(type="ok")]
 
 
 @dataclass
@@ -144,6 +165,7 @@ class Mode6Case:
     chunk_seq: int
     config: Mode6CaseConfig = field(default_factory=Mode6CaseConfig)
     stt_script: list[Mode6SttStep] = field(default_factory=list)
+    analysis_script: list[Mode6AnalysisStep] = field(default_factory=_default_mode6_analysis_script)
     history_initial: list[Mode6HistoryItem] = field(default_factory=list)
     history_arrivals: list[Mode6HistoryArrival] = field(default_factory=list)
     expected: Mode6Expected = field(default_factory=Mode6Expected)

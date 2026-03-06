@@ -6,6 +6,8 @@ from typing import Any
 import yaml
 
 from src.simulator.models import (
+    ALLOWED_MODE6_ANALYSIS_STATUSES,
+    ALLOWED_MODE6_ANALYSIS_STEP_TYPES,
     ALLOWED_MODE6_CONTEXT_REASONS,
     ALLOWED_MODE6_STT_STEP_TYPES,
     BenchmarkConfig,
@@ -19,6 +21,7 @@ from src.simulator.models import (
     Mode6CaseConfig,
     Mode6Config,
     Mode6Expected,
+    Mode6AnalysisStep,
     Mode6HistoryArrival,
     Mode6HistoryItem,
     Mode6SttStep,
@@ -237,6 +240,9 @@ def _parse_mode6(payload: Any) -> Mode6Config:
         stt_script = _parse_mode6_stt_script(item.get("stt_script"), case_id=case_id)
         if not stt_script:
             raise ValueError(f"mode6 case '{case_id}' stt_script must not be empty")
+        analysis_script = _parse_mode6_analysis_script(item.get("analysis_script"), case_id=case_id)
+        if not analysis_script:
+            analysis_script = [Mode6AnalysisStep(type="ok")]
 
         history_payload = item.get("history") if isinstance(item.get("history"), dict) else {}
         history_initial = _parse_mode6_history_initial(history_payload.get("initial"))
@@ -252,6 +258,7 @@ def _parse_mode6(payload: Any) -> Mode6Config:
                 chunk_seq=chunk_seq,
                 config=case_config,
                 stt_script=stt_script,
+                analysis_script=analysis_script,
                 history_initial=history_initial,
                 history_arrivals=history_arrivals,
                 expected=expected,
@@ -280,6 +287,34 @@ def _parse_mode6_stt_script(payload: Any, *, case_id: str) -> list[Mode6SttStep]
         if step.normalized_type() == "ok" and not step.text:
             raise ValueError(f"mode6 case '{case_id}' stt_script[{idx}] type=ok requires non-empty text")
         out.append(step)
+    return out
+
+
+def _parse_mode6_analysis_script(payload: Any, *, case_id: str) -> list[Mode6AnalysisStep]:
+    out: list[Mode6AnalysisStep] = []
+    for idx, item in enumerate(_coerce_list(payload), start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_type = str(item.get("type", "ok") or "ok").strip().lower()
+        if raw_type not in ALLOWED_MODE6_ANALYSIS_STEP_TYPES:
+            allowed = ",".join(sorted(ALLOWED_MODE6_ANALYSIS_STEP_TYPES))
+            raise ValueError(
+                f"mode6 case '{case_id}' analysis_script[{idx}] invalid type='{raw_type}', allowed={allowed}"
+            )
+        delay_sec = float(item.get("delay_sec", 0.0))
+        if delay_sec < 0:
+            raise ValueError(f"mode6 case '{case_id}' analysis_script[{idx}] contains negative delay_sec")
+        result_raw = item.get("result")
+        if result_raw is not None and not isinstance(result_raw, dict):
+            raise ValueError(f"mode6 case '{case_id}' analysis_script[{idx}] result must be an object")
+        out.append(
+            Mode6AnalysisStep(
+                type=raw_type,
+                error=str(item.get("error", "") or "").strip(),
+                delay_sec=delay_sec,
+                result=result_raw or {},
+            )
+        )
     return out
 
 
@@ -335,6 +370,9 @@ def _parse_mode6_expected(payload: Any, *, case_id: str) -> Mode6Expected:
         stt_status=str(payload.get("stt_status", "") or "").strip(),
         stt_attempts=_coerce_opt_int(payload.get("stt_attempts")),
         analysis_called=_coerce_opt_bool(payload.get("analysis_called")),
+        analysis_status=str(payload.get("analysis_status", "") or "").strip(),
+        analysis_attempts=_coerce_opt_int(payload.get("analysis_attempts")),
+        analysis_elapsed_sec_lte=_coerce_opt_float(payload.get("analysis_elapsed_sec_lte")),
         context_reason=str(payload.get("context_reason", "") or "").strip(),
         context_chunk_count=_coerce_opt_int(payload.get("context_chunk_count")),
         missing_ranges=_coerce_opt_str_list(payload.get("missing_ranges")),
@@ -344,6 +382,13 @@ def _parse_mode6_expected(payload: Any, *, case_id: str) -> Mode6Expected:
         raise ValueError(
             f"mode6 case '{case_id}' expected.context_reason='{expected.context_reason}' invalid, allowed={allowed}"
         )
+    if expected.analysis_status and expected.analysis_status not in ALLOWED_MODE6_ANALYSIS_STATUSES:
+        allowed = ",".join(sorted(ALLOWED_MODE6_ANALYSIS_STATUSES))
+        raise ValueError(
+            f"mode6 case '{case_id}' expected.analysis_status='{expected.analysis_status}' invalid, allowed={allowed}"
+        )
+    if expected.analysis_elapsed_sec_lte is not None and expected.analysis_elapsed_sec_lte < 0:
+        raise ValueError(f"mode6 case '{case_id}' expected.analysis_elapsed_sec_lte must be >= 0")
     return expected
 
 

@@ -324,3 +324,208 @@ mode6:
         context_reason: timeout_wait_recent4
         context_chunk_count: 17
         missing_ranges: ["15"]
+
+    - id: analysis_once_ok
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 15
+        stage_timeout_sec: 60
+        retry_count: 4
+      stt_script:
+        - { type: ok, text: "analysis-once" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      analysis_script:
+        - { type: ok }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        analysis_status: ok
+        analysis_attempts: 1
+        context_reason: full18_ready
+        context_chunk_count: 18
+
+    - id: analysis_timeout_then_ok_within_20s
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 15
+        stage_timeout_sec: 60
+        retry_count: 4
+      stt_script:
+        - { type: ok, text: "analysis-timeout-then-ok" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      analysis_script:
+        - { type: timeout_request, error: "analysis-timeout-1" }
+        - { type: ok }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        analysis_status: ok
+        analysis_attempts: 2
+        analysis_elapsed_sec_lte: 20.0
+        context_reason: full18_ready
+        context_chunk_count: 18
+
+    - id: analysis_error_then_ok_within_20s
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 15
+        stage_timeout_sec: 60
+        retry_count: 4
+      stt_script:
+        - { type: ok, text: "analysis-error-then-ok" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      analysis_script:
+        - { type: error, error: "bad-json" }
+        - { type: ok }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        analysis_status: ok
+        analysis_attempts: 2
+        analysis_elapsed_sec_lte: 20.0
+        context_reason: full18_ready
+        context_chunk_count: 18
+
+    - id: analysis_exhaust_retry_lt_stage
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 15
+        stage_timeout_sec: 60
+        retry_count: 4
+      stt_script:
+        - { type: ok, text: "analysis-exhaust-retry" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      analysis_script:
+        - { type: error, error: "e1" }
+        - { type: error, error: "e2" }
+        - { type: error, error: "e3" }
+        - { type: error, error: "e4" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        analysis_status: analysis_drop_error
+        analysis_attempts: 4
+        context_reason: full18_ready
+        context_chunk_count: 18
+
+    - id: analysis_exhaust_stage_before_success
+      chunk_seq: 19
+      config:
+        request_timeout_sec: 15
+        stage_timeout_sec: 60
+        retry_count: 4
+      stt_script:
+        - { type: ok, text: "analysis-exhaust-stage" }
+      history:
+        initial:
+          - { seq: 1, text: "h1" }
+          - { seq: 2, text: "h2" }
+          - { seq: 3, text: "h3" }
+          - { seq: 4, text: "h4" }
+          - { seq: 5, text: "h5" }
+          - { seq: 6, text: "h6" }
+          - { seq: 7, text: "h7" }
+          - { seq: 8, text: "h8" }
+          - { seq: 9, text: "h9" }
+          - { seq: 10, text: "h10" }
+          - { seq: 11, text: "h11" }
+          - { seq: 12, text: "h12" }
+          - { seq: 13, text: "h13" }
+          - { seq: 14, text: "h14" }
+          - { seq: 15, text: "h15" }
+          - { seq: 16, text: "h16" }
+          - { seq: 17, text: "h17" }
+          - { seq: 18, text: "h18" }
+      analysis_script:
+        - { type: timeout_request, error: "t1" }
+        - { type: timeout_request, error: "t2" }
+        - { type: timeout_request, error: "t3" }
+        - { type: timeout_request, error: "t4" }
+      expected:
+        stt_status: ok
+        stt_attempts: 1
+        analysis_called: true
+        analysis_status: analysis_drop_timeout
+        analysis_attempts: 4
+        context_reason: full18_ready
+        context_chunk_count: 18
