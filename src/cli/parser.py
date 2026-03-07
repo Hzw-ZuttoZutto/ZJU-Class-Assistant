@@ -270,9 +270,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mic_listen.add_argument(
         "--rt-chunk-seconds",
-        type=int,
-        default=10,
-        help="Expected chunk duration seconds used by downstream analysis config",
+        type=float,
+        default=10.0,
+        help="Expected chunk duration seconds used by downstream analysis config (supports decimal)",
     )
     mic_listen.add_argument(
         "--rt-context-window-seconds",
@@ -391,7 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
     mic_publish.add_argument("--target-url", required=True, help="mic-listen base URL, e.g. http://127.0.0.1:18765")
     mic_publish.add_argument("--mic-upload-token", required=True, help="Shared upload token")
     mic_publish.add_argument("--device", required=True, help="Windows dshow microphone device name")
-    mic_publish.add_argument("--chunk-seconds", type=int, default=10, help="Segment duration in seconds")
+    mic_publish.add_argument(
+        "--chunk-seconds",
+        type=float,
+        default=10.0,
+        help="Segment duration in seconds (supports decimal)",
+    )
     mic_publish.add_argument(
         "--work-dir",
         default=".mic_publish_chunks",

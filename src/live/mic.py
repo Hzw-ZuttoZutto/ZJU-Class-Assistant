@@ -111,7 +111,7 @@ class MicChunkProcessor:
         self._next_chunk_seq = 0
         self._profile_path = self.stage_processor.session_dir / "realtime_profile.jsonl"
         self._profile_lock = threading.Lock()
-        self._chunk_seconds = max(1, int(getattr(self.stage_processor.config, "chunk_seconds", 10) or 10))
+        self._chunk_seconds = max(1.0, float(getattr(self.stage_processor.config, "chunk_seconds", 10.0) or 10.0))
 
         self._metrics = {
             "uploaded_total": 0,
@@ -445,7 +445,7 @@ class MicPublisher:
         target_url: str,
         upload_token: str,
         device: str,
-        chunk_seconds: int,
+        chunk_seconds: float,
         work_dir: Path,
         ffmpeg_bin: str,
         request_timeout_sec: float,
@@ -458,7 +458,7 @@ class MicPublisher:
         self.target_url = target_url.rstrip("/")
         self.upload_token = upload_token
         self.device = device
-        self.chunk_seconds = max(2, int(chunk_seconds))
+        self.chunk_seconds = max(2.0, float(chunk_seconds))
         self.work_dir = work_dir
         self.ffmpeg_bin = ffmpeg_bin.strip() or (which("ffmpeg") or "")
         self.request_timeout_sec = max(1.0, float(request_timeout_sec))
@@ -478,7 +478,7 @@ class MicPublisher:
         *,
         ffmpeg_bin: str,
         device: str,
-        chunk_seconds: int,
+        chunk_seconds: float,
         work_dir: Path,
         audio_codec: str = "libmp3lame",
         output_ext: str = "mp3",
@@ -509,7 +509,7 @@ class MicPublisher:
                 "-f",
                 "segment",
                 "-segment_time",
-                str(max(2, int(chunk_seconds))),
+                _format_ffmpeg_seconds(max(2.0, float(chunk_seconds))),
                 "-reset_timestamps",
                 "1",
                 "-strftime",
@@ -684,15 +684,16 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         session_dir = (Path.cwd() / f"mic_session_{ts}").resolve()
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    chunk_seconds = max(2, int(args.rt_chunk_seconds))
-    context_target_chunks = max(1, int(args.rt_context_window_seconds) // max(1, chunk_seconds))
+    chunk_seconds = max(2.0, float(args.rt_chunk_seconds))
+    context_window_seconds = max(30.0, float(args.rt_context_window_seconds))
+    context_target_chunks = max(1, int(context_window_seconds / max(0.1, chunk_seconds)))
     chunk_dir_cfg = Path(args.mic_chunk_dir).expanduser()
     chunk_dir = chunk_dir_cfg if chunk_dir_cfg.is_absolute() else (session_dir / chunk_dir_cfg)
 
     config = RealtimeInsightConfig(
         enabled=True,
         chunk_seconds=chunk_seconds,
-        context_window_seconds=max(30, int(args.rt_context_window_seconds)),
+        context_window_seconds=int(context_window_seconds),
         model=(args.rt_model or "").strip() or "gpt-5-mini",
         stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
         keywords_file=Path(args.rt_keywords_file).expanduser().resolve(),
@@ -772,7 +773,7 @@ def run_mic_publish(args: argparse.Namespace) -> int:
         target_url=(args.target_url or "").strip(),
         upload_token=(args.mic_upload_token or "").strip(),
         device=(args.device or "").strip(),
-        chunk_seconds=max(2, int(args.chunk_seconds)),
+        chunk_seconds=max(2.0, float(args.chunk_seconds)),
         work_dir=Path(args.work_dir).expanduser().resolve(),
         ffmpeg_bin=(args.ffmpeg_bin or "").strip(),
         request_timeout_sec=max(1.0, float(args.request_timeout_sec)),
@@ -807,6 +808,12 @@ def _delta_ms(start_ms: object, end_ms: object) -> int | None:
     if start < 0 or end < start:
         return None
     return end - start
+
+
+def _format_ffmpeg_seconds(value: float) -> str:
+    text = f"{max(0.01, float(value)):.3f}"
+    text = text.rstrip("0").rstrip(".")
+    return text or "0.01"
 
 
 def _ms_per_audio_sec(duration_ms: object, chunk_seconds: object) -> float | None:

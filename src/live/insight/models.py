@@ -48,7 +48,7 @@ def _coerce_str_list(value: object) -> list[str]:
 class RealtimeInsightConfig:
     enabled: bool = False
     audio_source_mode: str = "teacher_stream"
-    chunk_seconds: int = 10
+    chunk_seconds: float = 10.0
     context_window_seconds: int = 180  # legacy option; default maps to 18 chunks with 10s chunk
     model: str = "gpt-5-mini"
     stt_model: str = "whisper-large-v3"

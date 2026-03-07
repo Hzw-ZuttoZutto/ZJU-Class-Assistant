@@ -39,7 +39,7 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.target_url, "http://127.0.0.1:18765")
         self.assertEqual(args.mic_upload_token, "token")
         self.assertEqual(args.device, "Microphone (Realtek(R) Audio)")
-        self.assertEqual(args.chunk_seconds, 10)
+        self.assertEqual(args.chunk_seconds, 10.0)
         self.assertEqual(args.request_timeout_sec, 10.0)
         self.assertEqual(args.retry_base_sec, 0.5)
         self.assertEqual(args.retry_max_sec, 8.0)
@@ -54,6 +54,25 @@ class MicCliTests(unittest.TestCase):
         args = parser.parse_args(["mic-list-devices", "--ffmpeg-bin", "C:/ffmpeg/bin/ffmpeg.exe"])
         self.assertEqual(args.command, "mic-list-devices")
         self.assertEqual(args.ffmpeg_bin, "C:/ffmpeg/bin/ffmpeg.exe")
+
+    def test_mic_decimal_chunk_seconds(self) -> None:
+        parser = build_parser()
+        listen_args = parser.parse_args(["mic-listen", "--rt-chunk-seconds", "17.5"])
+        publish_args = parser.parse_args(
+            [
+                "mic-publish",
+                "--target-url",
+                "http://127.0.0.1:18765",
+                "--mic-upload-token",
+                "token",
+                "--device",
+                "Microphone (Realtek(R) Audio)",
+                "--chunk-seconds",
+                "17.5",
+            ]
+        )
+        self.assertEqual(listen_args.rt_chunk_seconds, 17.5)
+        self.assertEqual(publish_args.chunk_seconds, 17.5)
 
 
 if __name__ == "__main__":
