@@ -23,7 +23,7 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.run_dir, "tests/simulator/runs")
         self.assertEqual(args.chunk_seconds, 10)
         self.assertEqual(args.precompute_workers, 4)
-        self.assertEqual(args.rt_model, "gpt-5-mini")
+        self.assertEqual(args.rt_model, "gpt-4.1-mini")
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
         self.assertEqual(args.rt_api_base_url, "")

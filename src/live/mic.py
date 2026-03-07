@@ -694,7 +694,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         enabled=True,
         chunk_seconds=chunk_seconds,
         context_window_seconds=int(context_window_seconds),
-        model=(args.rt_model or "").strip() or "gpt-5-mini",
+        model=(args.rt_model or "").strip() or "gpt-4.1-mini",
         stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
         keywords_file=Path(args.rt_keywords_file).expanduser().resolve(),
         api_base_url=(args.rt_api_base_url or "").strip(),

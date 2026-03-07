@@ -16,7 +16,7 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.mic_upload_token, "")
         self.assertEqual(args.mic_chunk_max_bytes, 10 * 1024 * 1024)
         self.assertEqual(args.mic_chunk_dir, "_rt_chunks_mic")
-        self.assertEqual(args.rt_model, "gpt-5-mini")
+        self.assertEqual(args.rt_model, "gpt-4.1-mini")
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
         self.assertEqual(args.rt_analysis_request_timeout_sec, 15.0)

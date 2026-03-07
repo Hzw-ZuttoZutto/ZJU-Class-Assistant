@@ -328,7 +328,7 @@ def _build_runtime_config(args: argparse.Namespace) -> SimulateRuntimeConfig:
         run_dir=run_dir,
         chunk_seconds=max(2, int(args.chunk_seconds)),
         precompute_workers=max(1, int(args.precompute_workers)),
-        rt_model=(args.rt_model or "").strip() or "gpt-5-mini",
+        rt_model=(args.rt_model or "").strip() or "gpt-4.1-mini",
         rt_stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
         rt_keywords_file=keywords_file,
         rt_api_base_url=(args.rt_api_base_url or "").strip(),

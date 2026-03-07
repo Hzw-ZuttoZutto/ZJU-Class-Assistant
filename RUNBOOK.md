@@ -136,9 +136,10 @@ python -m src.main watch \
   --course-id 83650 \
   --sub-id 1895397 \
   --record-dir ./records \
+  # default balanced preset: gpt-4.1-mini + 10s chunk
   --rt-insight-enabled \
   --rt-stt-model whisper-large-v3 \
-  --rt-model gpt-5-mini \
+  --rt-model gpt-4.1-mini \
   --rt-api-base-url https://aihubmix.com/v1 \
   --rt-chunk-seconds 10 \
   --rt-context-window-seconds 180 \
@@ -268,8 +269,10 @@ python -m src.main mic-listen \
   --host 127.0.0.1 \
   --port 18765 \
   --mic-upload-token YOUR_TOKEN \
+  # default balanced preset: gpt-4.1-mini + 10s chunk
+  --rt-chunk-seconds 10 \
   --rt-stt-model whisper-large-v3 \
-  --rt-model gpt-5-mini \
+  --rt-model gpt-4.1-mini \
   --rt-keywords-file config/realtime_keywords.json \
   --rt-stt-request-timeout-sec 8 \
   --rt-stt-stage-timeout-sec 32 \

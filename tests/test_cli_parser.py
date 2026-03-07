@@ -70,7 +70,7 @@ class CliParserTests(unittest.TestCase):
         self.assertFalse(args.rt_insight_enabled)
         self.assertEqual(args.rt_chunk_seconds, 10)
         self.assertEqual(args.rt_context_window_seconds, 180)
-        self.assertEqual(args.rt_model, "gpt-5-mini")
+        self.assertEqual(args.rt_model, "gpt-4.1-mini")
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
         self.assertEqual(args.rt_api_base_url, "")

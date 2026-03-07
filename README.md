@@ -69,9 +69,10 @@ python -m src.main watch \
   --course-id 83650 \
   --sub-id <sub_id> \
   --record-dir ./records \
+  # default balanced preset: gpt-4.1-mini + 10s chunk
   --rt-insight-enabled \
   --rt-stt-model whisper-large-v3 \
-  --rt-model gpt-5-mini \
+  --rt-model gpt-4.1-mini \
   --rt-chunk-seconds 10 \
   --rt-context-window-seconds 180 \
   --rt-max-concurrency 5 \

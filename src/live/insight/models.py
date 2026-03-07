@@ -50,7 +50,7 @@ class RealtimeInsightConfig:
     audio_source_mode: str = "teacher_stream"
     chunk_seconds: float = 10.0
     context_window_seconds: int = 180  # legacy option; default maps to 18 chunks with 10s chunk
-    model: str = "gpt-5-mini"
+    model: str = "gpt-4.1-mini"
     stt_model: str = "whisper-large-v3"
     keywords_file: Path = field(default_factory=lambda: Path("config/realtime_keywords.json"))
     stt_request_timeout_sec: float = 8.0

@@ -138,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument(
         "--rt-model",
-        default="gpt-5-mini",
+        default="gpt-4.1-mini",
         help="OpenAI text model for realtime insight analysis",
     )
     watch.add_argument(
@@ -282,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mic_listen.add_argument(
         "--rt-model",
-        default="gpt-5-mini",
+        default="gpt-4.1-mini",
         help="OpenAI text model for realtime insight analysis",
     )
     mic_listen.add_argument(
@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     simulate.add_argument(
         "--rt-model",
-        default="gpt-5-mini",
+        default="gpt-4.1-mini",
         help="OpenAI text model for analysis stage",
     )
     simulate.add_argument(
