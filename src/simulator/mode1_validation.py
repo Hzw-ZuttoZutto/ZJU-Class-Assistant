@@ -337,18 +337,18 @@ def run_mode1_validation(
 
 
 def _recent_ready(*, available: set[int], chunk_seq: int, recent_required: int) -> bool:
+    recent_required = min(max(0, int(recent_required)), max(0, int(chunk_seq) - 1))
     if recent_required <= 0:
         return True
-    if chunk_seq <= 1:
-        return False
     start = max(1, chunk_seq - recent_required)
     return all(seq in available for seq in range(start, chunk_seq))
 
 
 def _full_ready(*, available: set[int], chunk_seq: int, target_chunks: int) -> bool:
-    if chunk_seq <= 1:
+    target = min(max(1, int(target_chunks)), max(0, int(chunk_seq) - 1))
+    if target <= 0:
         return True
-    start = max(1, chunk_seq - max(1, int(target_chunks)))
+    start = max(1, chunk_seq - target)
     return all(seq in available for seq in range(start, chunk_seq))
 
 

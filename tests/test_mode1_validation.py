@@ -54,7 +54,7 @@ class Mode1ValidationTests(unittest.TestCase):
                         "attempt_count": 1,
                         "analysis_elapsed_sec": 1.2,
                         "context_chunk_count": 0,
-                        "context_reason": "timeout_wait_recent4",
+                        "context_reason": "full18_ready",
                         "context_missing_ranges": [],
                     }
                 ],
@@ -96,7 +96,7 @@ class Mode1ValidationTests(unittest.TestCase):
                         "attempt_count": 1,
                         "analysis_elapsed_sec": 0.5,
                         "context_chunk_count": 0,
-                        "context_reason": "timeout_wait_recent4",
+                        "context_reason": "full18_ready",
                         "context_missing_ranges": [],
                     }
                 ],
@@ -137,7 +137,7 @@ class Mode1ValidationTests(unittest.TestCase):
                         "attempt_count": 1,
                         "analysis_elapsed_sec": 0.2,
                         "context_chunk_count": 0,
-                        "context_reason": "timeout_wait_recent4",
+                        "context_reason": "full18_ready",
                         "context_missing_ranges": [],
                         "is_recovery": False,
                     }
@@ -184,7 +184,7 @@ class Mode1ValidationTests(unittest.TestCase):
                         "attempt_count": 1,
                         "analysis_elapsed_sec": 0.2,
                         "context_chunk_count": 0,
-                        "context_reason": "timeout_wait_recent4",
+                        "context_reason": "full18_ready",
                         "context_missing_ranges": [],
                         "is_recovery": False,
                     }

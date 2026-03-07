@@ -462,11 +462,9 @@ class InsightStageProcessor:
             time.sleep(poll_interval_sec)
 
     def _history_recent_ready(self, *, history: list[TranscriptChunk], chunk_seq: int) -> bool:
-        recent_required = max(0, int(self.config.context_recent_required))
+        recent_required = self._effective_recent_required(chunk_seq=chunk_seq)
         if recent_required <= 0:
             return True
-        if chunk_seq <= 1:
-            return False
         available = {item.chunk_seq for item in history}
         start = max(1, chunk_seq - recent_required)
         required = range(start, chunk_seq)
@@ -476,8 +474,8 @@ class InsightStageProcessor:
         return True
 
     def _history_window_full_ready(self, *, history: list[TranscriptChunk], chunk_seq: int) -> bool:
-        target = max(1, int(self.config.context_target_chunks))
-        if chunk_seq <= 1:
+        target = self._effective_target_chunks(chunk_seq=chunk_seq)
+        if target <= 0:
             return True
         start = max(1, chunk_seq - target)
         available = {item.chunk_seq for item in history}
@@ -485,6 +483,16 @@ class InsightStageProcessor:
             if seq not in available:
                 return False
         return True
+
+    def _effective_recent_required(self, *, chunk_seq: int) -> int:
+        configured = max(0, int(self.config.context_recent_required))
+        available = max(0, int(chunk_seq) - 1)
+        return min(configured, available)
+
+    def _effective_target_chunks(self, *, chunk_seq: int) -> int:
+        configured = max(1, int(self.config.context_target_chunks))
+        available = max(0, int(chunk_seq) - 1)
+        return min(configured, available)
 
     @staticmethod
     def _missing_seq_ranges(
