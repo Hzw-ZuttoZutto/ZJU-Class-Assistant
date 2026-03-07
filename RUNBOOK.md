@@ -251,7 +251,7 @@ python -m src.main simulate \
 在本地机器执行：
 
 ```bash
-ssh clusters -L 8765:127.0.0.1:8765
+ssh <clusters> -L 8765:127.0.0.1:8765
 ```
 
 然后在本地浏览器打开：
@@ -348,5 +348,5 @@ python -m src.main watch --course-id 83650 --sub-id <sub_id> --poll-interval 3 -
 curl -s http://127.0.0.1:8765/api/metrics
 
 # 4) 本地转发（在本地机器）
-ssh clusters -L 8765:127.0.0.1:8765
+ssh <clusters> -L 8765:127.0.0.1:8765
 ```

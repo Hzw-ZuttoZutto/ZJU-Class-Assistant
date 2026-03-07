@@ -130,11 +130,14 @@ def run_scan(args: argparse.Namespace) -> int:
                 interval_sec=live_check_interval,
             )
             if live_result.checked and live_result.is_live:
+                live_match = dict(candidate)
+                live_match["sub_id"] = live_result.sub_id
                 print(
-                    f"[MATCH] course_id={candidate['course_id']} title={candidate['title']} "
+                    f"[MATCH] course_id={candidate['course_id']} "
+                    f"sub_id={live_result.sub_id or 'N/A'} title={candidate['title']} "
                     f"teachers={','.join(candidate['teachers'])} live=直播中"
                 )
-                found.append(candidate)
+                found.append(live_match)
                 continue
 
             if live_result.checked:

@@ -81,6 +81,7 @@ class ScanServiceLiveFilterTests(unittest.TestCase):
                     elapsed_sec=0.1,
                     last_error="",
                     hint="dynamic_api_live_text",
+                    sub_id="1895320",
                 ),
             ),
             redirect_stdout(stdout),
@@ -92,6 +93,7 @@ class ScanServiceLiveFilterTests(unittest.TestCase):
         self.assertTrue(payload["require_live"])
         self.assertEqual(payload["live_checked_candidates"], 1)
         self.assertEqual(len(payload["matches"]), 1)
+        self.assertEqual(payload["matches"][0]["sub_id"], "1895320")
         self.assertEqual(payload["live_check_failures"], [])
 
     def test_scan_with_live_filter_failure_goes_to_failure_list(self) -> None:

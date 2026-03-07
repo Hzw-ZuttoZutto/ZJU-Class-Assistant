@@ -28,7 +28,10 @@ class _Resp:
 class LiveCheckTests(unittest.TestCase):
     def test_check_live_static_html_hit(self) -> None:
         session = mock.Mock(spec=requests.Session)
-        session.get.side_effect = [_Resp(text="<html>...直播中...</html>")]
+        session.get.side_effect = [
+            _Resp(text="<html>...直播中...</html>"),
+            _Resp(payload={"code": 0, "msg": "ok", "list": [{"sub_id": "123"}]}),
+        ]
 
         result = check_course_live_status(
             session=session,
@@ -43,6 +46,34 @@ class LiveCheckTests(unittest.TestCase):
         self.assertTrue(result.checked)
         self.assertTrue(result.is_live)
         self.assertEqual(result.hint, "static_html_live_text")
+        self.assertEqual(result.sub_id, "123")
+
+    def test_check_live_dynamic_api_hit_returns_sub_id(self) -> None:
+        session = mock.Mock(spec=requests.Session)
+        session.get.side_effect = [
+            _Resp(text="<html>dynamic app shell</html>"),
+            _Resp(
+                payload={
+                    "code": 0,
+                    "msg": "ok",
+                    "list": [{"sub_id": "456", "status_text": "直播中"}],
+                }
+            ),
+        ]
+
+        result = check_course_live_status(
+            session=session,
+            token="tok",
+            timeout=5,
+            tenant_code="112",
+            course_id=1,
+            max_wait_sec=30.0,
+            interval_sec=2.0,
+        )
+        self.assertTrue(result.checked)
+        self.assertTrue(result.is_live)
+        self.assertEqual(result.hint, "dynamic_api_live_text")
+        self.assertEqual(result.sub_id, "456")
 
     def test_check_live_dynamic_api_no_live(self) -> None:
         session = mock.Mock(spec=requests.Session)

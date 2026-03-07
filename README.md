@@ -40,17 +40,18 @@ python -m py_compile $(find src tests -name '*.py')
 python -m unittest discover -s tests -v
 
 # 扫描课程
-python -m src.main scan --teacher '王强' --title '编译原理' --center 83650 --radius 0 --workers 1 --retries 1 --verbose
+python -m src.main scan --teacher '王强' --title '编译原理' --center 83650 --radius 100 --workers 64 --retries 1 --verbose
 
 # 扫描课程（仅保留“直播中”）
 python -m src.main scan \
   --teacher '王强' \
   --title '编译原理' \
   --center 83650 \
-  --radius 0 \
+  --radius 100 \
   --require-live \
   --live-check-timeout 30 \
-  --live-check-interval 2
+  --live-check-interval 2 \
+  --worker 64
 
 # 启动直播代理
 python -m src.main watch --course-id 83650 --sub-id <sub_id> --poll-interval 3 --port 8765 --no-browser
@@ -165,10 +166,67 @@ python -m src.main simulate \
 本地浏览器观看（本地执行）：
 
 ```bash
-ssh clusters -L 8765:127.0.0.1:8765
+ssh <clusters> -L 8765:127.0.0.1:8765
 ```
 
 然后打开：
 
 - `http://127.0.0.1:8765/player?role=teacher`
 - `http://127.0.0.1:8765/player?role=ppt`
+
+独立麦克风上游（`mic-listen + mic-publish`）：
+
+- 用途：不启动直播/录制，仅使用“本机麦克风 -> SSH 中继 -> 集群分析”链路。
+
+1) 集群启动接收与分析服务：
+
+```bash
+python -m src.main mic-listen \
+  --host 127.0.0.1 \
+  --port 18765 \
+  --mic-upload-token YOUR_TOKEN \
+  # default balanced preset: gpt-4.1-mini + 10s chunk
+  --rt-chunk-seconds 10 \
+  --rt-stt-model whisper-large-v3 \
+  --rt-model gpt-4.1-mini \
+  --rt-keywords-file config/realtime_keywords.json \
+  --rt-stt-request-timeout-sec 8 \
+  --rt-stt-stage-timeout-sec 32 \
+  --rt-stt-retry-count 4 \
+  --rt-stt-retry-interval-sec 0.2 \
+  --rt-analysis-request-timeout-sec 15 \
+  --rt-analysis-stage-timeout-sec 60 \
+  --rt-analysis-retry-count 4 \
+  --rt-analysis-retry-interval-sec 0.2 \
+  --rt-context-recent-required 4 \
+  --rt-context-wait-timeout-sec-1 1 \
+  --rt-context-wait-timeout-sec-2 5
+```
+
+2) 本机（Windows）建立 SSH 端口转发：
+
+```bash
+ssh <cluster> -L 18765:127.0.0.1:18765
+```
+
+3) 本机查看麦克风设备：
+
+```bash
+python -m src.main mic-list-devices
+```
+
+4) 本机启动麦克风发布：
+
+```bash
+python -m src.main mic-publish \
+  --target-url http://127.0.0.1:18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --device "你的麦克风设备名" \
+  --chunk-seconds 10
+```
+
+输出文件与 `watch --rt-insight-enabled` 相同，位于 `mic-listen` 的 `session_dir`：
+
+- `realtime_transcripts.jsonl`
+- `realtime_insights.jsonl`
+- `realtime_insights.log`
