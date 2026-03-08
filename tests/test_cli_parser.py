@@ -68,10 +68,19 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.username, "")
         self.assertEqual(args.password, "")
         self.assertFalse(args.rt_insight_enabled)
+        self.assertEqual(args.rt_pipeline_mode, "chunk")
         self.assertEqual(args.rt_chunk_seconds, 10)
         self.assertEqual(args.rt_context_window_seconds, 180)
         self.assertEqual(args.rt_model, "gpt-4.1-mini")
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
+        self.assertEqual(args.rt_asr_scene, "zh")
+        self.assertEqual(args.rt_asr_model, "")
+        self.assertEqual(args.rt_hotwords_file, "config/realtime_hotwords.json")
+        self.assertEqual(args.rt_window_sentences, 8)
+        self.assertEqual(args.rt_stream_analysis_workers, 32)
+        self.assertEqual(args.rt_stream_queue_size, 100)
+        self.assertEqual(args.rt_asr_endpoint, "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
+        self.assertEqual(args.rt_translation_target_languages, "zh")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
         self.assertEqual(args.rt_api_base_url, "")
         self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
@@ -113,6 +122,8 @@ class CliParserTests(unittest.TestCase):
                 "--record-recovery-window-sec",
                 "7",
                 "--rt-insight-enabled",
+                "--rt-pipeline-mode",
+                "stream",
                 "--rt-chunk-seconds",
                 "12",
                 "--rt-context-window-seconds",
@@ -121,6 +132,22 @@ class CliParserTests(unittest.TestCase):
                 "gpt-5-mini",
                 "--rt-stt-model",
                 "whisper-large-v3",
+                "--rt-asr-scene",
+                "multi",
+                "--rt-asr-model",
+                "gummy-realtime-v1",
+                "--rt-hotwords-file",
+                "/tmp/hotwords.json",
+                "--rt-window-sentences",
+                "9",
+                "--rt-stream-analysis-workers",
+                "40",
+                "--rt-stream-queue-size",
+                "120",
+                "--rt-asr-endpoint",
+                "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+                "--rt-translation-target-languages",
+                "zh,en",
                 "--rt-keywords-file",
                 "/tmp/k.json",
                 "--rt-api-base-url",
@@ -163,10 +190,19 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.record_startup_av_timeout, 20.0)
         self.assertEqual(args.record_recovery_window_sec, 7.0)
         self.assertTrue(args.rt_insight_enabled)
+        self.assertEqual(args.rt_pipeline_mode, "stream")
         self.assertEqual(args.rt_chunk_seconds, 12)
         self.assertEqual(args.rt_context_window_seconds, 240)
         self.assertEqual(args.rt_model, "gpt-5-mini")
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
+        self.assertEqual(args.rt_asr_scene, "multi")
+        self.assertEqual(args.rt_asr_model, "gummy-realtime-v1")
+        self.assertEqual(args.rt_hotwords_file, "/tmp/hotwords.json")
+        self.assertEqual(args.rt_window_sentences, 9)
+        self.assertEqual(args.rt_stream_analysis_workers, 40)
+        self.assertEqual(args.rt_stream_queue_size, 120)
+        self.assertEqual(args.rt_asr_endpoint, "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
+        self.assertEqual(args.rt_translation_target_languages, "zh,en")
         self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
         self.assertEqual(args.rt_api_base_url, "https://aihubmix.com/v1")
         self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)

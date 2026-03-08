@@ -263,11 +263,20 @@ def run_watch(args: argparse.Namespace) -> int:
         )
         recorder.start()
         if args.rt_insight_enabled:
+            pipeline_mode = str(getattr(args, "rt_pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
             keywords_file = Path(args.rt_keywords_file).expanduser().resolve()
             chunk_seconds = max(2, int(args.rt_chunk_seconds))
             context_target_chunks = max(1, int(args.rt_context_window_seconds) // max(1, chunk_seconds))
+            translation_targets = _parse_csv_values(getattr(args, "rt_translation_target_languages", "zh"))
             notifier = None
-            if args.rt_dingtalk_enabled:
+            dingtalk_enabled = bool(args.rt_dingtalk_enabled)
+            if pipeline_mode == "stream" and not dingtalk_enabled:
+                print(
+                    "Watch failed: stream mode requires DingTalk alert; pass --rt-dingtalk-enabled and configure bot.",
+                    file=sys.stderr,
+                )
+                return 1
+            if dingtalk_enabled:
                 webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
                 if dingtalk_error:
                     print(f"Watch failed: {dingtalk_error}", file=sys.stderr)
@@ -282,12 +291,26 @@ def run_watch(args: argparse.Namespace) -> int:
                     ),
                     log_fn=print,
                 )
+            asr_scene = str(getattr(args, "rt_asr_scene", "zh") or "zh").strip().lower() or "zh"
+            asr_model = (getattr(args, "rt_asr_model", "") or "").strip()
             insight_config = RealtimeInsightConfig(
                 enabled=True,
+                pipeline_mode=pipeline_mode,
                 chunk_seconds=chunk_seconds,
                 context_window_seconds=max(30, int(args.rt_context_window_seconds)),
                 model=(args.rt_model or "").strip() or "gpt-4.1-mini",
                 stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
+                asr_scene=asr_scene,
+                asr_model=asr_model,
+                hotwords_file=Path(getattr(args, "rt_hotwords_file", "config/realtime_hotwords.json"))
+                .expanduser()
+                .resolve(),
+                window_sentences=max(1, int(getattr(args, "rt_window_sentences", 8))),
+                stream_analysis_workers=max(1, int(getattr(args, "rt_stream_analysis_workers", 32))),
+                stream_queue_size=max(1, int(getattr(args, "rt_stream_queue_size", 100))),
+                asr_endpoint=(getattr(args, "rt_asr_endpoint", "") or "").strip()
+                or "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+                translation_target_languages=translation_targets,
                 keywords_file=keywords_file,
                 api_base_url=(args.rt_api_base_url or "").strip(),
                 stt_request_timeout_sec=max(1.0, float(args.rt_stt_request_timeout_sec)),
@@ -299,7 +322,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 analysis_retry_count=max(0, int(args.rt_analysis_retry_count)),
                 analysis_retry_interval_sec=max(0.0, float(args.rt_analysis_retry_interval_sec)),
                 alert_threshold=max(0, min(100, int(args.rt_alert_threshold))),
-                dingtalk_enabled=bool(args.rt_dingtalk_enabled),
+                dingtalk_enabled=dingtalk_enabled,
                 dingtalk_cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
                 dingtalk_send_timeout_sec=5.0,
                 dingtalk_send_retry_count=5,
@@ -313,7 +336,11 @@ def run_watch(args: argparse.Namespace) -> int:
                     max(0.0, float(args.rt_context_wait_timeout_sec_2)),
                 ),
                 use_dual_context_wait=True,
-                context_target_chunks=max(1, context_target_chunks),
+                context_target_chunks=(
+                    max(1, int(getattr(args, "rt_window_sentences", 8)))
+                    if pipeline_mode == "stream"
+                    else max(1, context_target_chunks)
+                ),
             )
             insight_service = RealtimeInsightService(
                 poller=poller,
@@ -321,12 +348,21 @@ def run_watch(args: argparse.Namespace) -> int:
                 config=insight_config,
                 notifier=notifier,
             )
-            print(
-                "Realtime insight enabled: "
-                f"stt_model={insight_config.stt_model}, analysis_model={insight_config.model}, "
-                f"chunk={insight_config.chunk_seconds}s, context_chunks={insight_config.context_target_chunks}, "
-                f"workers={insight_config.max_concurrency}, keywords={keywords_file}"
-            )
+            if pipeline_mode == "stream":
+                print(
+                    "Realtime insight enabled(stream): "
+                    f"asr_scene={insight_config.asr_scene}, asr_model={insight_config.asr_model or '(auto)'}, "
+                    f"analysis_model={insight_config.model}, window_sentences={insight_config.window_sentences}, "
+                    f"analysis_workers={insight_config.stream_analysis_workers}, "
+                    f"queue_size={insight_config.stream_queue_size}, hotwords={insight_config.hotwords_file}"
+                )
+            else:
+                print(
+                    "Realtime insight enabled(chunk): "
+                    f"stt_model={insight_config.stt_model}, analysis_model={insight_config.model}, "
+                    f"chunk={insight_config.chunk_seconds}s, context_chunks={insight_config.context_target_chunks}, "
+                    f"workers={insight_config.max_concurrency}, keywords={keywords_file}"
+                )
             if insight_config.dingtalk_enabled:
                 print(
                     "Realtime DingTalk alert enabled: "
@@ -397,3 +433,15 @@ def run_watch(args: argparse.Namespace) -> int:
         poller.stop()
 
     return 0
+
+
+def _parse_csv_values(raw: object) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return ["zh"]
+    out: list[str] = []
+    for item in text.split(","):
+        value = str(item or "").strip()
+        if value:
+            out.append(value)
+    return out or ["zh"]

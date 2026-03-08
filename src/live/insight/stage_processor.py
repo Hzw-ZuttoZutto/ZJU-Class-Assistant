@@ -162,6 +162,124 @@ class InsightStageProcessor:
             profile["final_error"] = ""
             profile["stage_processor_finished_ts_ms"] = _now_epoch_ms()
 
+    def process_transcript_event(
+        self,
+        *,
+        chunk_seq: int,
+        chunk_file: str,
+        transcript_text: str,
+        ts: datetime | None = None,
+        asr_global_seq: int = 0,
+        asr_sentence_id: str = "",
+        asr_start_ms: int | None = None,
+        asr_end_ms: int | None = None,
+        translation_text: str = "",
+        event_type: str = "final",
+    ) -> None:
+        now = (ts or datetime.now().astimezone()).astimezone()
+        text = (transcript_text or "").strip()
+        translated = (translation_text or "").strip()
+        transcript_chunk = TranscriptChunk(
+            chunk_seq=int(chunk_seq),
+            chunk_file=str(chunk_file or f"asr_sentence_{int(chunk_seq):06d}"),
+            ts_local=format_local_ts(now),
+            text=text,
+            status="ok",
+            error="",
+            attempt_count=1,
+            elapsed_sec=0.0,
+            asr_global_seq=max(0, int(asr_global_seq)),
+            asr_sentence_id=str(asr_sentence_id or "").strip(),
+            asr_start_ms=asr_start_ms,
+            asr_end_ms=asr_end_ms,
+            translation_text=translated,
+            event_type=str(event_type or "").strip(),
+        )
+        self.append_transcript(transcript_chunk)
+        if not text:
+            self._log(
+                f"[WARNING] [rt-insight] drop transcript-only seq={chunk_seq} file={transcript_chunk.chunk_file} reason=empty"
+            )
+            return
+
+        context_chunks = self.wait_and_collect_history(chunk_seq)
+        context_text = self.render_history_context(
+            context_chunks,
+            chunk_seq=chunk_seq,
+            target_chunks=max(1, int(self.config.context_target_chunks)),
+            mark_missing=bool(getattr(self.config, "use_dual_context_wait", False)),
+        )
+        context_chunk_count = len(context_chunks)
+        context_reason = str(self._last_context_reason or "").strip()
+        context_missing_ranges = self._missing_seq_ranges(
+            history=context_chunks,
+            chunk_seq=chunk_seq,
+            target_chunks=max(1, int(self.config.context_target_chunks)),
+        )
+
+        analysis_text = text
+        if translated and str(getattr(self.config, "asr_scene", "zh")).strip().lower() == "multi":
+            analysis_text = f"原文：{text}\n翻译：{translated}"
+
+        trace_meta = {
+            "asr_global_seq": max(0, int(asr_global_seq)),
+            "asr_sentence_id": str(asr_sentence_id or "").strip(),
+            "asr_start_ms": asr_start_ms,
+            "asr_end_ms": asr_end_ms,
+            "event_type": str(event_type or "").strip(),
+            "translation_text": translated,
+        }
+        result, analysis_status, analysis_attempt, analysis_error, analysis_elapsed_sec = self.analyze_with_retry(
+            chunk_seq=chunk_seq,
+            chunk_file=transcript_chunk.chunk_file,
+            current_text=analysis_text,
+            context_text=context_text,
+            context_chunk_count=context_chunk_count,
+            trace_meta=trace_meta,
+        )
+        if result is None:
+            self.write_drop_insight(
+                ts=now,
+                chunk_seq=chunk_seq,
+                chunk_file=transcript_chunk.chunk_file,
+                status=analysis_status,
+                attempt_count=analysis_attempt,
+                error=analysis_error,
+                context_chunk_count=context_chunk_count,
+                analysis_elapsed_sec=analysis_elapsed_sec,
+                context_reason=context_reason,
+                context_missing_ranges=context_missing_ranges,
+                asr_global_seq=max(0, int(asr_global_seq)),
+                asr_sentence_id=str(asr_sentence_id or "").strip(),
+                asr_start_ms=asr_start_ms,
+                asr_end_ms=asr_end_ms,
+                target_text=analysis_text,
+                context_text=context_text,
+            )
+            self._log(
+                f"[WARNING] [rt-insight] analysis dropped seq={chunk_seq} file={transcript_chunk.chunk_file} "
+                f"reason={analysis_status} error={analysis_error}"
+            )
+            return
+
+        self.write_success_insight(
+            ts=now,
+            chunk_seq=chunk_seq,
+            chunk_file=transcript_chunk.chunk_file,
+            result=result,
+            attempt_count=analysis_attempt,
+            context_chunk_count=context_chunk_count,
+            analysis_elapsed_sec=analysis_elapsed_sec,
+            context_reason=context_reason,
+            context_missing_ranges=context_missing_ranges,
+            asr_global_seq=max(0, int(asr_global_seq)),
+            asr_sentence_id=str(asr_sentence_id or "").strip(),
+            asr_start_ms=asr_start_ms,
+            asr_end_ms=asr_end_ms,
+            target_text=analysis_text,
+            context_text=context_text,
+        )
+
     def process_simulated_chunk(
         self,
         *,
@@ -357,6 +475,7 @@ class InsightStageProcessor:
         context_text: str,
         context_chunk_count: int,
         profile: dict[str, Any] | None = None,
+        trace_meta: dict[str, Any] | None = None,
     ) -> tuple[InsightModelResult | None, str, int, str, float]:
         if self.client is None:
             if profile is not None:
@@ -404,26 +523,27 @@ class InsightStageProcessor:
                 def trace_hook(trace_payload: dict[str, Any]) -> None:
                     nonlocal debug_index
                     debug_index += 1
-                    self.append_analysis_prompt_trace(
-                        {
-                            "chunk_seq": int(chunk_seq),
-                            "chunk_file": str(chunk_file),
-                            "attempt": int(attempt),
-                            "trace_index": int(debug_index),
-                            "context_chunk_count": int(context_chunk_count),
-                            "chunk_seconds": float(self.config.chunk_seconds),
-                            "current_text": current_text,
-                            "context_text": context_text,
-                            "system_prompt": str(trace_payload.get("system_prompt", "")),
-                            "user_prompt": str(trace_payload.get("user_prompt", "")),
-                            "request_payload_snapshot": trace_payload.get("request_payload_snapshot", {}),
-                            "raw_response_text": str(trace_payload.get("raw_response_text", "")),
-                            "parsed_ok": bool(trace_payload.get("parsed_ok", False)),
-                            "parsed_payload": trace_payload.get("parsed_payload", {}),
-                            "error": str(trace_payload.get("error", "")),
-                            "duration_sec": float(trace_payload.get("duration_sec", 0.0)),
-                        }
-                    )
+                    trace_body: dict[str, Any] = {
+                        "chunk_seq": int(chunk_seq),
+                        "chunk_file": str(chunk_file),
+                        "attempt": int(attempt),
+                        "trace_index": int(debug_index),
+                        "context_chunk_count": int(context_chunk_count),
+                        "chunk_seconds": float(self.config.chunk_seconds),
+                        "current_text": current_text,
+                        "context_text": context_text,
+                        "system_prompt": str(trace_payload.get("system_prompt", "")),
+                        "user_prompt": str(trace_payload.get("user_prompt", "")),
+                        "request_payload_snapshot": trace_payload.get("request_payload_snapshot", {}),
+                        "raw_response_text": str(trace_payload.get("raw_response_text", "")),
+                        "parsed_ok": bool(trace_payload.get("parsed_ok", False)),
+                        "parsed_payload": trace_payload.get("parsed_payload", {}),
+                        "error": str(trace_payload.get("error", "")),
+                        "duration_sec": float(trace_payload.get("duration_sec", 0.0)),
+                    }
+                    for key, value in dict(trace_meta or {}).items():
+                        trace_body[key] = value
+                    self.append_analysis_prompt_trace(trace_body)
 
                 if profile is not None and not first_request_marked:
                     profile["analysis_request_ts_ms"] = _now_epoch_ms()
@@ -701,6 +821,12 @@ class InsightStageProcessor:
         analysis_elapsed_sec: float = 0.0,
         context_reason: str = "",
         context_missing_ranges: list[str] | None = None,
+        asr_global_seq: int = 0,
+        asr_sentence_id: str = "",
+        asr_start_ms: int | None = None,
+        asr_end_ms: int | None = None,
+        target_text: str = "",
+        context_text: str = "",
         profile: dict[str, Any] | None = None,
     ) -> None:
         summary = "分析超时已丢弃" if status == "analysis_drop_timeout" else "分析失败已丢弃"
@@ -726,6 +852,12 @@ class InsightStageProcessor:
             analysis_elapsed_sec=max(0.0, float(analysis_elapsed_sec)),
             context_reason=str(context_reason or "").strip(),
             context_missing_ranges=list(context_missing_ranges or []),
+            asr_global_seq=max(0, int(asr_global_seq)),
+            asr_sentence_id=str(asr_sentence_id or "").strip(),
+            asr_start_ms=asr_start_ms,
+            asr_end_ms=asr_end_ms,
+            target_text=str(target_text or "").strip(),
+            context_text=str(context_text or "").strip(),
         )
         self.append_insight_event(event, profile=profile)
 
@@ -741,6 +873,12 @@ class InsightStageProcessor:
         analysis_elapsed_sec: float = 0.0,
         context_reason: str = "",
         context_missing_ranges: list[str] | None = None,
+        asr_global_seq: int = 0,
+        asr_sentence_id: str = "",
+        asr_start_ms: int | None = None,
+        asr_end_ms: int | None = None,
+        target_text: str = "",
+        context_text: str = "",
         profile: dict[str, Any] | None = None,
     ) -> None:
         summary = result.summary or "当前没有什么重要内容"
@@ -769,6 +907,12 @@ class InsightStageProcessor:
             analysis_elapsed_sec=max(0.0, float(analysis_elapsed_sec)),
             context_reason=str(context_reason or "").strip(),
             context_missing_ranges=list(context_missing_ranges or []),
+            asr_global_seq=max(0, int(asr_global_seq)),
+            asr_sentence_id=str(asr_sentence_id or "").strip(),
+            asr_start_ms=asr_start_ms,
+            asr_end_ms=asr_end_ms,
+            target_text=str(target_text or "").strip(),
+            context_text=str(context_text or "").strip(),
         )
         self.append_insight_event(event, profile=profile)
 

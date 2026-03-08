@@ -134,6 +134,35 @@ def resolve_dingtalk_bot_settings(
     return "", "", "missing DingTalk bot settings: " + "; ".join(missing_parts)
 
 
+def resolve_dashscope_api_key(
+    *,
+    env_name: str = "DASHSCOPE_API_KEY",
+) -> tuple[str, str]:
+    resolved_env = (env_name or "DASHSCOPE_API_KEY").strip() or "DASHSCOPE_API_KEY"
+    account_file = default_account_file()
+    account_entries: dict[str, str] = {}
+    account_read_error = ""
+    if account_file.exists():
+        try:
+            account_entries = _parse_account_entries(account_file)
+        except OSError as exc:
+            account_read_error = f"failed to read account file {account_file}: {exc}"
+
+    key = _resolve_named_setting(
+        account_entries=account_entries,
+        account_candidates=[resolved_env.lower(), "dashscope_api_key"],
+        env_candidates=[resolved_env],
+    )
+    if key:
+        return key, ""
+    if account_read_error:
+        return "", account_read_error
+    return "", (
+        f"missing DashScope API key: set {resolved_env} / dashscope_api_key in {account_file} "
+        f"or export {resolved_env}"
+    )
+
+
 def _read_openai_key_from_entries(entries: dict[str, str], env_name: str) -> str:
     candidates = [env_name.strip().lower(), "openai_api_key", "openai_key"]
     seen: set[str] = set()

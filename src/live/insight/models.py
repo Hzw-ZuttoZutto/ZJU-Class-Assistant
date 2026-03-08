@@ -132,10 +132,20 @@ def _coerce_keyword_groups(value: object) -> list[KeywordGroup]:
 class RealtimeInsightConfig:
     enabled: bool = False
     audio_source_mode: str = "teacher_stream"
+    pipeline_mode: str = "chunk"
     chunk_seconds: float = 10.0
     context_window_seconds: int = 180  # legacy option; default maps to 18 chunks with 10s chunk
     model: str = "gpt-4.1-mini"
     stt_model: str = "whisper-large-v3"
+    asr_scene: str = "zh"
+    asr_model: str = ""
+    hotwords_file: Path = field(default_factory=lambda: Path("config/realtime_hotwords.json"))
+    window_sentences: int = 8
+    stream_analysis_workers: int = 32
+    stream_queue_size: int = 100
+    asr_endpoint: str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+    asr_api_key_env: str = "DASHSCOPE_API_KEY"
+    translation_target_languages: list[str] = field(default_factory=lambda: ["zh"])
     keywords_file: Path = field(default_factory=lambda: Path("config/realtime_keywords.json"))
     stt_request_timeout_sec: float = 8.0
     stt_stage_timeout_sec: float = 32.0
@@ -179,9 +189,17 @@ class TranscriptChunk:
     error: str = ""
     attempt_count: int = 0
     elapsed_sec: float = 0.0
+    asr_global_seq: int = 0
+    asr_sentence_id: str = ""
+    asr_start_ms: int | None = None
+    asr_end_ms: int | None = None
+    translation_text: str = ""
+    event_type: str = ""
 
     @classmethod
     def from_json_dict(cls, payload: dict) -> "TranscriptChunk":
+        start_ms = payload.get("asr_start_ms", None)
+        end_ms = payload.get("asr_end_ms", None)
         return cls(
             chunk_seq=int(payload.get("chunk_seq", 0)),
             chunk_file=str(payload.get("chunk_file", "")).strip(),
@@ -191,10 +209,16 @@ class TranscriptChunk:
             error=str(payload.get("error", "")).strip(),
             attempt_count=int(payload.get("attempt_count", 0) or 0),
             elapsed_sec=float(payload.get("elapsed_sec", 0.0) or 0.0),
+            asr_global_seq=int(payload.get("asr_global_seq", 0) or 0),
+            asr_sentence_id=str(payload.get("asr_sentence_id", "")).strip(),
+            asr_start_ms=int(start_ms) if isinstance(start_ms, int) or (isinstance(start_ms, str) and start_ms.isdigit()) else None,
+            asr_end_ms=int(end_ms) if isinstance(end_ms, int) or (isinstance(end_ms, str) and end_ms.isdigit()) else None,
+            translation_text=str(payload.get("translation_text", "")).strip(),
+            event_type=str(payload.get("event_type", "")).strip(),
         )
 
     def to_json_dict(self) -> dict:
-        return {
+        payload = {
             "chunk_seq": self.chunk_seq,
             "chunk_file": self.chunk_file,
             "ts_local": self.ts_local,
@@ -204,6 +228,19 @@ class TranscriptChunk:
             "attempt_count": self.attempt_count,
             "elapsed_sec": self.elapsed_sec,
         }
+        if self.asr_global_seq > 0:
+            payload["asr_global_seq"] = int(self.asr_global_seq)
+        if self.asr_sentence_id:
+            payload["asr_sentence_id"] = self.asr_sentence_id
+        if self.asr_start_ms is not None:
+            payload["asr_start_ms"] = int(self.asr_start_ms)
+        if self.asr_end_ms is not None:
+            payload["asr_end_ms"] = int(self.asr_end_ms)
+        if self.translation_text:
+            payload["translation_text"] = self.translation_text
+        if self.event_type:
+            payload["event_type"] = self.event_type
+        return payload
 
 
 @dataclass
@@ -229,6 +266,12 @@ class InsightEvent:
     analysis_elapsed_sec: float = 0.0
     context_reason: str = ""
     context_missing_ranges: list[str] = field(default_factory=list)
+    asr_global_seq: int = 0
+    asr_sentence_id: str = ""
+    asr_start_ms: int | None = None
+    asr_end_ms: int | None = None
+    target_text: str = ""
+    context_text: str = ""
 
     @property
     def urgency_percent(self) -> int:
@@ -239,7 +282,7 @@ class InsightEvent:
         return "紧急!" if self.important else "平常"
 
     def to_json_dict(self) -> dict:
-        return {
+        payload = {
             "ts_local": format_local_ts(self.ts),
             "chunk_seq": self.chunk_seq,
             "chunk_file": self.chunk_file,
@@ -263,3 +306,16 @@ class InsightEvent:
             "context_reason": self.context_reason,
             "context_missing_ranges": self.context_missing_ranges,
         }
+        if self.asr_global_seq > 0:
+            payload["asr_global_seq"] = int(self.asr_global_seq)
+        if self.asr_sentence_id:
+            payload["asr_sentence_id"] = self.asr_sentence_id
+        if self.asr_start_ms is not None:
+            payload["asr_start_ms"] = int(self.asr_start_ms)
+        if self.asr_end_ms is not None:
+            payload["asr_end_ms"] = int(self.asr_end_ms)
+        if self.target_text:
+            payload["target_text"] = self.target_text
+        if self.context_text:
+            payload["context_text"] = self.context_text
+        return payload

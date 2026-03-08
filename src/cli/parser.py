@@ -125,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable realtime key information extraction from teacher audio",
     )
     watch.add_argument(
+        "--rt-pipeline-mode",
+        choices=["chunk", "stream"],
+        default="chunk",
+        help="Realtime insight pipeline mode: chunk(legacy) or stream(new)",
+    )
+    watch.add_argument(
         "--rt-chunk-seconds",
         type=int,
         default=10,
@@ -145,6 +151,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--rt-stt-model",
         default="whisper-large-v3",
         help="OpenAI speech-to-text model for realtime insight",
+    )
+    watch.add_argument(
+        "--rt-asr-scene",
+        choices=["zh", "multi"],
+        default="zh",
+        help="Streaming ASR scene profile used by --rt-pipeline-mode=stream",
+    )
+    watch.add_argument(
+        "--rt-asr-model",
+        default="",
+        help="Optional streaming ASR model override",
+    )
+    watch.add_argument(
+        "--rt-hotwords-file",
+        default="config/realtime_hotwords.json",
+        help="Hotwords JSON array file path for stream mode ASR",
+    )
+    watch.add_argument(
+        "--rt-window-sentences",
+        type=int,
+        default=8,
+        help="Sliding window sentence count for stream mode",
+    )
+    watch.add_argument(
+        "--rt-stream-analysis-workers",
+        type=int,
+        default=32,
+        help="Parallel analysis workers for stream mode",
+    )
+    watch.add_argument(
+        "--rt-stream-queue-size",
+        type=int,
+        default=100,
+        help="Pending analysis queue size for stream mode",
+    )
+    watch.add_argument(
+        "--rt-asr-endpoint",
+        default="wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        help="DashScope websocket endpoint for stream mode ASR",
+    )
+    watch.add_argument(
+        "--rt-translation-target-languages",
+        default="zh",
+        help="Comma-separated translation targets used by multi-scene stream ASR",
     )
     watch.add_argument(
         "--rt-keywords-file",
@@ -280,6 +330,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Chunk directory (relative to session dir if not absolute)",
     )
     mic_listen.add_argument(
+        "--rt-pipeline-mode",
+        choices=["chunk", "stream"],
+        default="chunk",
+        help="Realtime insight pipeline mode: chunk(legacy) or stream(new)",
+    )
+    mic_listen.add_argument(
         "--rt-chunk-seconds",
         type=float,
         default=10.0,
@@ -300,6 +356,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--rt-stt-model",
         default="whisper-large-v3",
         help="OpenAI speech-to-text model for realtime insight",
+    )
+    mic_listen.add_argument(
+        "--rt-asr-scene",
+        choices=["zh", "multi"],
+        default="zh",
+        help="Streaming ASR scene profile used by --rt-pipeline-mode=stream",
+    )
+    mic_listen.add_argument(
+        "--rt-asr-model",
+        default="",
+        help="Optional streaming ASR model override",
+    )
+    mic_listen.add_argument(
+        "--rt-hotwords-file",
+        default="config/realtime_hotwords.json",
+        help="Hotwords JSON array file path for stream mode ASR",
+    )
+    mic_listen.add_argument(
+        "--rt-window-sentences",
+        type=int,
+        default=8,
+        help="Sliding window sentence count for stream mode",
+    )
+    mic_listen.add_argument(
+        "--rt-stream-analysis-workers",
+        type=int,
+        default=32,
+        help="Parallel analysis workers for stream mode",
+    )
+    mic_listen.add_argument(
+        "--rt-stream-queue-size",
+        type=int,
+        default=100,
+        help="Pending analysis queue size for stream mode",
+    )
+    mic_listen.add_argument(
+        "--rt-asr-endpoint",
+        default="wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        help="DashScope websocket endpoint for stream mode ASR",
+    )
+    mic_listen.add_argument(
+        "--rt-translation-target-languages",
+        default="zh",
+        help="Comma-separated translation targets used by multi-scene stream ASR",
     )
     mic_listen.add_argument(
         "--rt-keywords-file",
@@ -414,10 +514,22 @@ def build_parser() -> argparse.ArgumentParser:
     mic_publish.add_argument("--mic-upload-token", required=True, help="Shared upload token")
     mic_publish.add_argument("--device", required=True, help="Windows dshow microphone device name")
     mic_publish.add_argument(
+        "--rt-pipeline-mode",
+        choices=["chunk", "stream"],
+        default="chunk",
+        help="Publish mode: chunk upload(legacy) or stream websocket(new)",
+    )
+    mic_publish.add_argument(
         "--chunk-seconds",
         type=float,
         default=10.0,
         help="Segment duration in seconds (supports decimal)",
+    )
+    mic_publish.add_argument(
+        "--stream-frame-duration-ms",
+        type=int,
+        default=100,
+        help="Frame duration in milliseconds for stream mode",
     )
     mic_publish.add_argument(
         "--work-dir",

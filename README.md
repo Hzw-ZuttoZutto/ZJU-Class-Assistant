@@ -146,6 +146,7 @@ python -m src.main simulate \
 - 每段缺失日志：`课程名_老师名_开始时间_结束时间.missing.json`
 - 会话汇总：`recording_session_report.json`
 - 实时转写日志：`realtime_transcripts.jsonl`
+- 实时 ASR 事件日志（stream 模式）：`realtime_asr_events.jsonl`
 - 实时结构化日志：`realtime_insights.jsonl`
 - 实时中文镜像日志：`realtime_insights.log`
 - 分析 Prompt 调试日志：`analysis_prompt_trace.jsonl`
@@ -157,9 +158,34 @@ python -m src.main simulate \
 - 关键词配置支持 `version: 2` 分组规则：按 `groups[*].id/label/aliases/phrases/detail_cues` 维护事件类型，新增分组只需改配置，不必改代码。
 - 旧版扁平字段 `important_terms/important_phrases/negative_terms` 仍可兼容读取。
 - 实时流程为两阶段：`10s音频 -> STT转写 -> 文本上下文分析`。
+- 新增 stream 模式（`--rt-pipeline-mode stream`）：`音频流 + 热词 -> 句级ASR(partial/final) -> 句级滑窗分析`。
+- stream 模式默认模型映射：`zh -> paraformer-realtime-v2`，`multi -> gummy-realtime-v1`（可由 `--rt-asr-model` 覆盖）。
+- stream 模式新增句级日志：`realtime_asr_events.jsonl`（记录 partial/final、sentence_id、start/end_ms）。
+- stream 模式下 `realtime_transcripts.jsonl` 仅写入 final 句，保持兼容字段并追加句级定位字段。
 - 紧急度为二分类：重要=95%，非重要或失败降级=10%。
 - 可选钉钉告警：仅 `watch` / `mic-listen` 支持，通过 `--rt-dingtalk-enabled` 开启。
 - 钉钉告警冷却时间默认 `30s`，可通过 `--rt-dingtalk-cooldown-sec` 调整。
+- stream 模式强制要求钉钉可用（未配置则启动失败）。
+
+watch stream 模式示例：
+
+```bash
+python -m src.main watch \
+  --course-id 83650 \
+  --sub-id <sub_id> \
+  --record-dir ./records \
+  --rt-insight-enabled \
+  --rt-pipeline-mode stream \
+  --rt-dingtalk-enabled \
+  --rt-asr-scene zh \
+  --rt-asr-model paraformer-realtime-v2 \
+  --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-window-sentences 8 \
+  --rt-stream-analysis-workers 32 \
+  --rt-stream-queue-size 100 \
+  --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
+  --rt-model gpt-4.1-mini
+```
 
 仿真器说明：
 
@@ -218,6 +244,24 @@ python -m src.main mic-listen \
   --rt-context-wait-timeout-sec-2 5
 ```
 
+集群 stream 模式（新增）：
+
+```bash
+python -m src.main mic-listen \
+  --host 127.0.0.1 \
+  --port 18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --rt-pipeline-mode stream \
+  --rt-dingtalk-enabled \
+  --rt-asr-scene zh \
+  --rt-asr-model paraformer-realtime-v2 \
+  --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-window-sentences 8 \
+  --rt-stream-analysis-workers 32 \
+  --rt-stream-queue-size 100 \
+  --rt-model gpt-4.1-mini
+```
+
 2) 本机（Windows）建立 SSH 端口转发：
 
 ```bash
@@ -236,9 +280,21 @@ python -m src.main mic-list-devices
 python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token YOUR_TOKEN --device "你的麦克风设备" --chunk-seconds 10
 ```
 
+本机 stream 模式发布（新增）：
+
+```bash
+python -m src.main mic-publish \
+  --target-url http://127.0.0.1:18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --device "你的麦克风设备" \
+  --rt-pipeline-mode stream \
+  --stream-frame-duration-ms 100
+```
+
 输出文件与 `watch --rt-insight-enabled` 相同，位于 `mic-listen` 的 `session_dir`：
 
 - `realtime_transcripts.jsonl`
+- `realtime_asr_events.jsonl`（stream 模式）
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
 - 若开启钉钉告警，只会转发 `important=true` 的事件，且 `30s` 冷却窗口内的新紧急事件会直接丢弃。

@@ -192,11 +192,15 @@ python -m src.main watch \
 - 缺失区间日志：每分片 `*.missing.json`，全局 `recording_session_report.json`
 - `--record-segment-minutes 0` 表示整场只输出一个分片，直到手动终止。
 - 实时转写日志：`realtime_transcripts.jsonl`
+- 实时 ASR 事件日志（stream 模式）：`realtime_asr_events.jsonl`
 - 实时结构化日志：`realtime_insights.jsonl`
 - 实时中文镜像日志：`realtime_insights.log`
 - 分析 Prompt 调试日志：`analysis_prompt_trace.jsonl`
 - 实时音频切片目录：`_rt_chunks/`
 - 实时流程：`10s音频 -> STT转写 -> 文本上下文分析`
+- stream 流式模式：`--rt-pipeline-mode stream`，流程为 `音频流 -> 句级ASR(partial/final) -> 句级滑窗分析`
+- stream 默认模型映射：`zh -> paraformer-realtime-v2`，`multi -> gummy-realtime-v1`，可用 `--rt-asr-model` 覆盖
+- stream 模式要求钉钉可用（未配置 `--rt-dingtalk-enabled` 与凭据会启动失败）
 - 关键词配置默认使用 `config/realtime_keywords.json`，支持 `version: 2` 分组规则；新增事件分组只需追加 `groups` 项。
 - 旧版 `important_terms/important_phrases/negative_terms` 配置仍兼容。
 - 可选钉钉告警：通过 `--rt-dingtalk-enabled` 开启，仅转发 `important=true` 事件。
@@ -299,6 +303,24 @@ python -m src.main mic-listen \
   --rt-context-wait-timeout-sec-2 5
 ```
 
+stream 模式（新增）：
+
+```bash
+python -m src.main mic-listen \
+  --host 127.0.0.1 \
+  --port 18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --rt-pipeline-mode stream \
+  --rt-dingtalk-enabled \
+  --rt-asr-scene zh \
+  --rt-asr-model paraformer-realtime-v2 \
+  --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-window-sentences 8 \
+  --rt-stream-analysis-workers 32 \
+  --rt-stream-queue-size 100 \
+  --rt-model gpt-4.1-mini
+```
+
 2) 本机（Windows）建立 SSH 端口转发：
 
 ```bash
@@ -321,8 +343,20 @@ python -m src.main mic-publish \
   --chunk-seconds 10
 ```
 
+stream 模式发布（新增）：
+
+```bash
+python -m src.main mic-publish \
+  --target-url http://127.0.0.1:18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --device "你的麦克风设备名" \
+  --rt-pipeline-mode stream \
+  --stream-frame-duration-ms 100
+```
+
 输出文件与 `watch --rt-insight-enabled` 相同，位于 `mic-listen` 的 `session_dir`：
 - `realtime_transcripts.jsonl`
+- `realtime_asr_events.jsonl`（stream 模式）
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
 - 若开启钉钉告警，默认 `30s` 冷却窗口内只接受第一条紧急提醒。

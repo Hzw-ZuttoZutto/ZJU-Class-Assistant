@@ -8,6 +8,8 @@ from src.live.insight.models import (
 )
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.live.insight.service import RealtimeInsightService
+from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline
+from src.live.insight.stream_asr import RealtimeAsrEvent, resolve_default_asr_model
 
 __all__ = [
     "InsightEvent",
@@ -19,4 +21,7 @@ __all__ = [
     "DingTalkNotifierMetadata",
     "InsightStageProcessor",
     "RealtimeInsightService",
+    "StreamRealtimeInsightPipeline",
+    "RealtimeAsrEvent",
+    "resolve_default_asr_model",
 ]

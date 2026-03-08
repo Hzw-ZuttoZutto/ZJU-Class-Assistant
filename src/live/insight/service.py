@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from src.common.account import resolve_openai_client_settings
+from src.common.account import resolve_dashscope_api_key, resolve_openai_client_settings
+from src.live.insight.audio_streamer import RealtimeAudioFrameReader
 from src.live.insight.audio_chunker import RealtimeAudioChunker
 from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import (
@@ -21,6 +22,7 @@ from src.live.insight.models import (
 from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient, invoke_analyze_text
 from src.live.insight.prompting import build_history_context_block
 from src.live.insight.stage_processor import InsightStageProcessor
+from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline
 
 
 class RealtimeInsightService:
@@ -52,8 +54,11 @@ class RealtimeInsightService:
             chunk_dir=self.session_dir / "_rt_chunks",
             chunk_seconds=max(2, int(config.chunk_seconds)),
         )
+        self._stream_reader = RealtimeAudioFrameReader(frame_duration_ms=100, log_fn=self._log)
         self._client = client
         self._notifier = notifier
+        self._pipeline_mode = str(getattr(config, "pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
+        self._stream_pipeline: StreamRealtimeInsightPipeline | None = None
 
         self._active_url = ""
         self._ready_age_sec = 1.2
@@ -85,6 +90,9 @@ class RealtimeInsightService:
         if thread is not None:
             thread.join()
         self._thread = None
+        if self._stream_pipeline is not None:
+            self._stream_pipeline.stop()
+            self._stream_pipeline = None
         if self._stage_processor is not None:
             self._stage_processor.close()
         elif self._notifier is not None:
@@ -92,6 +100,9 @@ class RealtimeInsightService:
 
     def _run(self) -> None:
         if not self._prepare_runtime():
+            return
+        if self._pipeline_mode == "stream":
+            self._run_stream_mode()
             return
 
         self._executor = ThreadPoolExecutor(
@@ -113,6 +124,11 @@ class RealtimeInsightService:
             self._executor = None
 
     def _prepare_runtime(self) -> bool:
+        if self._pipeline_mode == "stream":
+            return self._prepare_stream_runtime()
+        return self._prepare_chunk_runtime()
+
+    def _prepare_chunk_runtime(self) -> bool:
         self._keywords = self._load_keywords(self.config.keywords_file)
         if not self._chunker.ensure_available():
             self._log("[rt-insight] ffmpeg not found; disabling realtime insight")
@@ -157,6 +173,96 @@ class RealtimeInsightService:
             stop_event=self._stop_event,
         )
         return True
+
+    def _prepare_stream_runtime(self) -> bool:
+        if not self._stream_reader.ensure_available():
+            self._log("[rt-stream] ffmpeg not found; disabling stream insight")
+            return False
+        if self._notifier is None:
+            self._log("[rt-stream] DingTalk notifier is required for stream mode")
+            return False
+        self._keywords = self._load_keywords(self.config.keywords_file)
+        if self._client is None:
+            api_key, resolved_base_url, key_error = resolve_openai_client_settings(
+                api_key_env_name=self.config.api_key_env,
+                base_url_env_name=self.config.base_url_env,
+            )
+            if not api_key:
+                self._log(f"[rt-stream] {key_error}; stream insight disabled")
+                return False
+            base_url = (self.config.api_base_url or "").strip() or resolved_base_url
+            self.config.api_base_url = base_url
+            try:
+                self._client = OpenAIInsightClient(
+                    api_key=api_key,
+                    timeout_sec=max(
+                        float(self.config.stt_request_timeout_sec),
+                        float(self.config.analysis_request_timeout_sec),
+                    ),
+                    base_url=base_url,
+                )
+            except Exception as exc:
+                self._log(f"[rt-stream] failed to initialize OpenAI client: {exc}")
+                return False
+        dashscope_key, dashscope_err = resolve_dashscope_api_key(env_name=self.config.asr_api_key_env)
+        if not dashscope_key:
+            self._log(f"[rt-stream] {dashscope_err}; stream insight disabled")
+            return False
+        if self._client is None:
+            self._log("[rt-stream] OpenAI client unavailable")
+            return False
+        self._stream_pipeline = StreamRealtimeInsightPipeline(
+            session_dir=self.session_dir,
+            config=self.config,
+            keywords=self._keywords,
+            llm_client=self._client,
+            dashscope_api_key=dashscope_key,
+            notifier=self._notifier,
+            log_fn=self._log,
+            stop_event=self._stop_event,
+        )
+        try:
+            self._stream_pipeline.start()
+        except Exception as exc:
+            self._log(f"[rt-stream] failed to start stream pipeline: {exc}")
+            self._stream_pipeline = None
+            return False
+        self._log(
+            "[rt-stream] started with "
+            f"asr_scene={self.config.asr_scene}, asr_model={self.config.asr_model}, "
+            f"analysis_model={self.config.model}, workers={self.config.stream_analysis_workers}, "
+            f"queue_size={self.config.stream_queue_size}"
+        )
+        return True
+
+    def _run_stream_mode(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                teacher_url = self._teacher_stream_url()
+                if not teacher_url:
+                    if self._active_url:
+                        self._log("[rt-stream] teacher stream unavailable; pausing frame reader")
+                    self._active_url = ""
+                    self._stream_reader.stop()
+                elif teacher_url != self._active_url:
+                    self._active_url = teacher_url
+                    try:
+                        self._stream_reader.start_stream_source(teacher_url, on_frame=self._on_stream_audio_frame)
+                        self._log("[rt-stream] audio reader attached to teacher stream")
+                    except Exception as exc:
+                        self._log(f"[rt-stream] failed to start audio reader: {exc}")
+                self._stop_event.wait(max(0.2, float(self.config.poll_interval_sec)))
+        finally:
+            self._stream_reader.stop()
+            if self._stream_pipeline is not None:
+                self._stream_pipeline.stop()
+                self._stream_pipeline = None
+
+    def _on_stream_audio_frame(self, data: bytes) -> None:
+        pipeline = self._stream_pipeline
+        if pipeline is None:
+            return
+        _ = pipeline.submit_audio_frame(data)
 
     def _sync_stream_source(self) -> None:
         teacher_url = self._teacher_stream_url()

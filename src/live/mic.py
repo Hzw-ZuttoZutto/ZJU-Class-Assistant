@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import locale
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
@@ -22,11 +24,13 @@ from typing import Any, Callable
 
 import requests
 
-from src.common.account import resolve_dingtalk_bot_settings, resolve_openai_client_settings
+from src.common.account import resolve_dashscope_api_key, resolve_dingtalk_bot_settings, resolve_openai_client_settings
+from src.live.insight.audio_streamer import build_mic_stream_ffmpeg_command
 from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format_local_ts
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
+from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline
 
 
 def _load_keywords(path: Path, *, log_fn: Callable[[str], None]) -> KeywordConfig:
@@ -108,6 +112,9 @@ class _RetryState:
 class _QueuedChunkItem:
     path: Path
     profile: dict[str, Any] | None = None
+
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class MicChunkProcessor:
@@ -388,20 +395,94 @@ class MicChunkProcessor:
                 self._queue.task_done()
 
 
-def build_mic_http_handler(*, processor: MicChunkProcessor, upload_token: str):
+class MicStreamProcessor:
+    def __init__(
+        self,
+        *,
+        pipeline: StreamRealtimeInsightPipeline,
+        log_fn: Callable[[str], None] | None = None,
+    ) -> None:
+        self.pipeline = pipeline
+        self._log_fn = log_fn or print
+        self._lock = threading.Lock()
+        self._metrics = {
+            "ws_connections": 0,
+            "ws_disconnects": 0,
+            "stream_frames_total": 0,
+            "stream_bytes_total": 0,
+            "stream_failures": 0,
+            "auth_failures": 0,
+            "last_error": "",
+        }
+
+    def start(self) -> None:
+        self.pipeline.start()
+
+    def stop(self) -> None:
+        self.pipeline.stop()
+
+    def on_connection_open(self) -> None:
+        with self._lock:
+            self._metrics["ws_connections"] += 1
+
+    def on_connection_close(self) -> None:
+        with self._lock:
+            self._metrics["ws_disconnects"] += 1
+
+    def mark_auth_failure(self) -> None:
+        with self._lock:
+            self._metrics["auth_failures"] += 1
+
+    def ingest_frame(self, payload: bytes) -> None:
+        data = bytes(payload or b"")
+        if not data:
+            return
+        try:
+            ok = bool(self.pipeline.submit_audio_frame(data))
+            with self._lock:
+                self._metrics["stream_frames_total"] += 1
+                self._metrics["stream_bytes_total"] += len(data)
+                if not ok:
+                    self._metrics["stream_failures"] += 1
+        except Exception as exc:
+            with self._lock:
+                self._metrics["stream_failures"] += 1
+                self._metrics["last_error"] = str(exc)
+            self._log_fn(f"[mic-listen] stream frame ingest failed: {exc}")
+
+    def metrics(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._metrics)
+
+
+def build_mic_http_handler(
+    *,
+    processor: MicChunkProcessor,
+    upload_token: str,
+    stream_processor: MicStreamProcessor | None = None,
+):
     class _MicHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            if path == "/ws/mic/stream":
+                return self._handle_mic_stream_ws(parsed)
+
             if self.path == "/api/mic/health":
+                stream_running = bool(stream_processor is not None)
                 return self._write_json(
                     HTTPStatus.OK,
                     {
                         "ok": True,
                         "running": processor.is_running(),
+                        "stream_running": stream_running,
                         "chunk_dir": processor.chunk_dir.as_posix(),
                     },
                 )
             if self.path == "/api/mic/metrics":
-                return self._write_json(HTTPStatus.OK, processor.metrics())
+                payload = processor.metrics()
+                payload["stream"] = stream_processor.metrics() if stream_processor is not None else {}
+                return self._write_json(HTTPStatus.OK, payload)
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:
@@ -445,6 +526,57 @@ def build_mic_http_handler(*, processor: MicChunkProcessor, upload_token: str):
                 remote_receive_done_ts_ms=remote_receive_done_ts_ms,
             )
             self._write_json(status, payload)
+
+        def _handle_mic_stream_ws(self, parsed: urllib.parse.ParseResult) -> None:
+            if stream_processor is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+
+            token = str(self.headers.get("X-Mic-Token", "") or "").strip()
+            if not token:
+                query = urllib.parse.parse_qs(parsed.query)
+                token = str((query.get("token") or [""])[0] or "").strip()
+            if token != upload_token:
+                stream_processor.mark_auth_failure()
+                self.send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+                return
+
+            upgrade = str(self.headers.get("Upgrade", "") or "").strip().lower()
+            connection = str(self.headers.get("Connection", "") or "").strip().lower()
+            ws_key = str(self.headers.get("Sec-WebSocket-Key", "") or "").strip()
+            if upgrade != "websocket" or "upgrade" not in connection or not ws_key:
+                self.send_error(HTTPStatus.BAD_REQUEST, "websocket upgrade required")
+                return
+
+            accept = _build_ws_accept(ws_key)
+            self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+
+            stream_processor.on_connection_open()
+            try:
+                while True:
+                    frame = _read_ws_frame(self.rfile)
+                    if frame is None:
+                        break
+                    opcode, payload = frame
+                    if opcode == 0x8:  # close
+                        _write_ws_frame(self.wfile, opcode=0x8, payload=b"")
+                        break
+                    if opcode == 0x9:  # ping
+                        _write_ws_frame(self.wfile, opcode=0xA, payload=payload)
+                        continue
+                    if opcode in {0x2, 0x0}:  # binary / continuation
+                        stream_processor.ingest_frame(payload)
+                        continue
+                    if opcode == 0x1:  # text
+                        continue
+            except Exception:
+                return
+            finally:
+                stream_processor.on_connection_close()
 
         def log_message(self, fmt: str, *args: object) -> None:  # noqa: D401
             return
@@ -694,6 +826,111 @@ class MicPublisher:
         raise RuntimeError(f"status={resp.status_code} body={resp.text[:200]}")
 
 
+class MicStreamPublisher:
+    def __init__(
+        self,
+        *,
+        target_url: str,
+        upload_token: str,
+        device: str,
+        ffmpeg_bin: str,
+        frame_duration_ms: int,
+        request_timeout_sec: float,
+        retry_base_sec: float,
+        retry_max_sec: float,
+        log_fn: Callable[[str], None] | None = None,
+    ) -> None:
+        self.target_url = str(target_url or "").rstrip("/")
+        self.upload_token = str(upload_token or "").strip()
+        self.device = str(device or "").strip()
+        self.ffmpeg_bin = ffmpeg_bin.strip() or (which("ffmpeg") or "")
+        self.frame_duration_ms = max(20, int(frame_duration_ms))
+        self.request_timeout_sec = max(1.0, float(request_timeout_sec))
+        self.retry_base_sec = max(0.1, float(retry_base_sec))
+        self.retry_max_sec = max(self.retry_base_sec, float(retry_max_sec))
+        self._log_fn = log_fn or print
+        self._stop_event = threading.Event()
+
+    def run(self) -> int:
+        if not self.ffmpeg_bin:
+            print("[mic-publish] ffmpeg not found in PATH")
+            return 1
+        if not self.upload_token:
+            print("[mic-publish] missing --mic-upload-token")
+            return 1
+        if not self.device:
+            print("[mic-publish] missing --device")
+            return 1
+
+        delay = self.retry_base_sec
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self._run_once()
+                    delay = self.retry_base_sec
+                except KeyboardInterrupt:
+                    break
+                except Exception as exc:
+                    self._log_fn(f"[mic-publish] stream failed: {exc}; retry_in={delay:.2f}s")
+                    if self._stop_event.wait(delay):
+                        break
+                    delay = min(self.retry_max_sec, delay * 2.0)
+        finally:
+            self._stop_event.set()
+        return 0
+
+    def _run_once(self) -> None:
+        try:
+            import websocket  # type: ignore
+        except Exception as exc:  # pragma: no cover - dependency error path
+            raise RuntimeError("websocket-client is unavailable; install dependencies") from exc
+
+        ws_url = _http_to_ws(self.target_url) + f"/ws/mic/stream?token={urllib.parse.quote_plus(self.upload_token)}"
+        ws = websocket.create_connection(  # type: ignore[attr-defined]
+            ws_url,
+            timeout=self.request_timeout_sec,
+            header=[f"X-Mic-Token: {self.upload_token}"],
+        )
+        proc: subprocess.Popen | None = None
+        try:
+            cmd = build_mic_stream_ffmpeg_command(
+                ffmpeg_bin=self.ffmpeg_bin,
+                device=self.device,
+                sample_rate=16000,
+            )
+            proc = subprocess.Popen(  # noqa: S603
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            frame_bytes = max(320, int(16000 * 2 * self.frame_duration_ms / 1000))
+            self._log_fn(
+                f"[mic-publish] started stream device={self.device!r} frame={self.frame_duration_ms}ms target={ws_url}"
+            )
+            stdout = proc.stdout
+            if stdout is None:
+                raise RuntimeError("ffmpeg stdout unavailable")
+            while not self._stop_event.is_set():
+                payload = stdout.read(frame_bytes)
+                if not payload:
+                    if proc.poll() is not None:
+                        raise RuntimeError("ffmpeg exited unexpectedly")
+                    continue
+                ws.send_binary(payload)
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.send_signal(signal.SIGINT)
+                    proc.wait(timeout=1.5)
+                except Exception:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+
+
 def run_mic_listen(args: argparse.Namespace) -> int:
     upload_token = (args.mic_upload_token or "").strip() or os.environ.get("MIC_UPLOAD_TOKEN", "").strip()
     if not upload_token:
@@ -707,18 +944,32 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         session_dir = (Path.cwd() / f"mic_session_{ts}").resolve()
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    pipeline_mode = str(getattr(args, "rt_pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
     chunk_seconds = max(2.0, float(args.rt_chunk_seconds))
     context_window_seconds = max(30.0, float(args.rt_context_window_seconds))
     context_target_chunks = max(1, int(context_window_seconds / max(0.1, chunk_seconds)))
+    translation_targets = _parse_csv_values(getattr(args, "rt_translation_target_languages", "zh"))
     chunk_dir_cfg = Path(args.mic_chunk_dir).expanduser()
     chunk_dir = chunk_dir_cfg if chunk_dir_cfg.is_absolute() else (session_dir / chunk_dir_cfg)
 
     config = RealtimeInsightConfig(
         enabled=True,
+        pipeline_mode=pipeline_mode,
         chunk_seconds=chunk_seconds,
         context_window_seconds=int(context_window_seconds),
         model=(args.rt_model or "").strip() or "gpt-4.1-mini",
         stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
+        asr_scene=str(getattr(args, "rt_asr_scene", "zh") or "zh").strip().lower() or "zh",
+        asr_model=(getattr(args, "rt_asr_model", "") or "").strip(),
+        hotwords_file=Path(getattr(args, "rt_hotwords_file", "config/realtime_hotwords.json"))
+        .expanduser()
+        .resolve(),
+        window_sentences=max(1, int(getattr(args, "rt_window_sentences", 8))),
+        stream_analysis_workers=max(1, int(getattr(args, "rt_stream_analysis_workers", 32))),
+        stream_queue_size=max(1, int(getattr(args, "rt_stream_queue_size", 100))),
+        asr_endpoint=(getattr(args, "rt_asr_endpoint", "") or "").strip()
+        or "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        translation_target_languages=translation_targets,
         keywords_file=Path(args.rt_keywords_file).expanduser().resolve(),
         api_base_url=(args.rt_api_base_url or "").strip(),
         stt_request_timeout_sec=max(1.0, float(args.rt_stt_request_timeout_sec)),
@@ -739,7 +990,11 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             max(0.0, float(args.rt_context_wait_timeout_sec_2)),
         ),
         use_dual_context_wait=True,
-        context_target_chunks=max(1, context_target_chunks),
+        context_target_chunks=(
+            max(1, int(getattr(args, "rt_window_sentences", 8)))
+            if pipeline_mode == "stream"
+            else max(1, context_target_chunks)
+        ),
         audio_source_mode="mic_upload",
         mic_upload_token=upload_token,
         mic_chunk_max_bytes=max(1, int(args.mic_chunk_max_bytes)),
@@ -750,6 +1005,9 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         dingtalk_send_timeout_sec=5.0,
         dingtalk_send_retry_count=5,
     )
+    if pipeline_mode == "stream" and not config.dingtalk_enabled:
+        print("[mic-listen] stream mode requires --rt-dingtalk-enabled with valid bot settings")
+        return 1
 
     client = _build_openai_client(config)
     if client is None:
@@ -767,6 +1025,9 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             cooldown_sec=config.dingtalk_cooldown_sec,
             log_fn=print,
         )
+    if pipeline_mode == "stream" and notifier is None:
+        print("[mic-listen] stream mode requires DingTalk notifier")
+        return 1
 
     keywords = _load_keywords(config.keywords_file, log_fn=print)
     stage_processor = InsightStageProcessor(
@@ -787,15 +1048,50 @@ def run_mic_listen(args: argparse.Namespace) -> int:
     )
     processor.start()
 
-    handler_cls = build_mic_http_handler(processor=processor, upload_token=upload_token)
+    stream_processor: MicStreamProcessor | None = None
+    if pipeline_mode == "stream":
+        dashscope_key, dashscope_error = resolve_dashscope_api_key(env_name=config.asr_api_key_env)
+        if not dashscope_key:
+            print(f"[mic-listen] {dashscope_error}")
+            processor.stop()
+            stage_processor.close()
+            return 1
+        pipeline = StreamRealtimeInsightPipeline(
+            session_dir=session_dir,
+            config=config,
+            keywords=keywords,
+            llm_client=client,
+            dashscope_api_key=dashscope_key,
+            notifier=notifier,
+            log_fn=print,
+        )
+        stream_processor = MicStreamProcessor(pipeline=pipeline, log_fn=print)
+        try:
+            stream_processor.start()
+        except Exception as exc:
+            print(f"[mic-listen] failed to start stream pipeline: {exc}")
+            processor.stop()
+            stage_processor.close()
+            return 1
+
+    handler_cls = build_mic_http_handler(
+        processor=processor,
+        upload_token=upload_token,
+        stream_processor=stream_processor,
+    )
     server = ThreadingHTTPServer((args.host, int(args.port)), handler_cls)
     try:
         print(f"[mic-listen] started at: http://{args.host}:{int(args.port)}")
         print(f"[mic-listen] upload endpoint: http://{args.host}:{int(args.port)}/api/mic/chunk")
+        if pipeline_mode == "stream":
+            print(
+                f"[mic-listen] stream websocket: ws://{args.host}:{int(args.port)}/ws/mic/stream?token=***"
+            )
         print(f"[mic-listen] health endpoint: http://{args.host}:{int(args.port)}/api/mic/health")
         print(f"[mic-listen] metrics endpoint: http://{args.host}:{int(args.port)}/api/mic/metrics")
         print(f"[mic-listen] session_dir={session_dir}")
         print(f"[mic-listen] chunk_dir={chunk_dir}")
+        print(f"[mic-listen] pipeline_mode={pipeline_mode}")
         if config.profile_enabled:
             print(f"[mic-listen] profile_log={session_dir / 'realtime_profile.jsonl'}")
         if config.dingtalk_enabled:
@@ -807,12 +1103,29 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             pass
     finally:
         server.server_close()
+        if stream_processor is not None:
+            stream_processor.stop()
         processor.stop()
         stage_processor.close()
     return 0
 
 
 def run_mic_publish(args: argparse.Namespace) -> int:
+    pipeline_mode = str(getattr(args, "rt_pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
+    if pipeline_mode == "stream":
+        publisher = MicStreamPublisher(
+            target_url=(args.target_url or "").strip(),
+            upload_token=(args.mic_upload_token or "").strip(),
+            device=(args.device or "").strip(),
+            ffmpeg_bin=(args.ffmpeg_bin or "").strip(),
+            frame_duration_ms=max(20, int(getattr(args, "stream_frame_duration_ms", 100))),
+            request_timeout_sec=max(1.0, float(args.request_timeout_sec)),
+            retry_base_sec=max(0.1, float(args.retry_base_sec)),
+            retry_max_sec=max(0.1, float(args.retry_max_sec)),
+            log_fn=print,
+        )
+        return publisher.run()
+
     work_dir, auto_generated = _resolve_mic_publish_work_dir(getattr(args, "work_dir", ""))
     if auto_generated:
         print(f"[mic-publish] --work-dir not provided; auto-generated timestamp work_dir={work_dir}")
@@ -848,6 +1161,100 @@ def run_mic_publish(args: argparse.Namespace) -> int:
         log_fn=print,
     )
     return publisher.run()
+
+
+def _parse_csv_values(raw: object) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return ["zh"]
+    out: list[str] = []
+    for item in text.split(","):
+        value = str(item or "").strip()
+        if value:
+            out.append(value)
+    return out or ["zh"]
+
+
+def _http_to_ws(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        ws_scheme = "wss"
+    else:
+        ws_scheme = "ws"
+    netloc = parsed.netloc
+    if not netloc:
+        netloc = parsed.path
+    return f"{ws_scheme}://{netloc.rstrip('/')}"
+
+
+def _build_ws_accept(ws_key: str) -> str:
+    raw = (str(ws_key or "").strip() + _WS_GUID).encode("utf-8")
+    digest = hashlib.sha1(raw).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def _read_ws_frame(handle) -> tuple[int, bytes] | None:
+    header = _read_exact(handle, 2)
+    if not header:
+        return None
+    b1 = header[0]
+    b2 = header[1]
+    opcode = b1 & 0x0F
+    masked = bool(b2 & 0x80)
+    length = b2 & 0x7F
+    if length == 126:
+        raw = _read_exact(handle, 2)
+        if raw is None:
+            return None
+        length = int.from_bytes(raw, "big")
+    elif length == 127:
+        raw = _read_exact(handle, 8)
+        if raw is None:
+            return None
+        length = int.from_bytes(raw, "big")
+
+    mask_key = b""
+    if masked:
+        raw_mask = _read_exact(handle, 4)
+        if raw_mask is None:
+            return None
+        mask_key = raw_mask
+    payload = _read_exact(handle, length)
+    if payload is None:
+        return None
+    if masked and mask_key:
+        data = bytearray(payload)
+        for idx in range(len(data)):
+            data[idx] ^= mask_key[idx % 4]
+        payload = bytes(data)
+    return opcode, payload
+
+
+def _write_ws_frame(handle, *, opcode: int, payload: bytes) -> None:
+    body = bytes(payload or b"")
+    first = 0x80 | (opcode & 0x0F)
+    length = len(body)
+    if length < 126:
+        header = bytes([first, length])
+    elif length < (1 << 16):
+        header = bytes([first, 126]) + int(length).to_bytes(2, "big")
+    else:
+        header = bytes([first, 127]) + int(length).to_bytes(8, "big")
+    handle.write(header + body)
+    handle.flush()
+
+
+def _read_exact(handle, size: int) -> bytes | None:
+    if size <= 0:
+        return b""
+    out = bytearray()
+    while len(out) < size:
+        block = handle.read(size - len(out))
+        if not block:
+            return None
+        out.extend(block)
+    return bytes(out)
 
 
 def _parse_optional_epoch_ms(value: object) -> int | None:

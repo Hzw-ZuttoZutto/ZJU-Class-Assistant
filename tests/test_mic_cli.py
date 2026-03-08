@@ -16,8 +16,17 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.mic_upload_token, "")
         self.assertEqual(args.mic_chunk_max_bytes, 10 * 1024 * 1024)
         self.assertEqual(args.mic_chunk_dir, "_rt_chunks_mic")
+        self.assertEqual(args.rt_pipeline_mode, "chunk")
         self.assertEqual(args.rt_model, "gpt-4.1-mini")
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
+        self.assertEqual(args.rt_asr_scene, "zh")
+        self.assertEqual(args.rt_asr_model, "")
+        self.assertEqual(args.rt_hotwords_file, "config/realtime_hotwords.json")
+        self.assertEqual(args.rt_window_sentences, 8)
+        self.assertEqual(args.rt_stream_analysis_workers, 32)
+        self.assertEqual(args.rt_stream_queue_size, 100)
+        self.assertEqual(args.rt_asr_endpoint, "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
+        self.assertEqual(args.rt_translation_target_languages, "zh")
         self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
         self.assertEqual(args.rt_analysis_request_timeout_sec, 15.0)
         self.assertFalse(args.rt_dingtalk_enabled)
@@ -41,7 +50,9 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.target_url, "http://127.0.0.1:18765")
         self.assertEqual(args.mic_upload_token, "token")
         self.assertEqual(args.device, "Microphone (Realtek(R) Audio)")
+        self.assertEqual(args.rt_pipeline_mode, "chunk")
         self.assertEqual(args.chunk_seconds, 10.0)
+        self.assertEqual(args.stream_frame_duration_ms, 100)
         self.assertEqual(args.work_dir, "")
         self.assertEqual(args.request_timeout_sec, 10.0)
         self.assertEqual(args.retry_base_sec, 0.5)
@@ -101,6 +112,43 @@ class MicCliTests(unittest.TestCase):
         )
         self.assertEqual(listen_args.rt_chunk_seconds, 17.5)
         self.assertEqual(publish_args.chunk_seconds, 17.5)
+
+    def test_mic_stream_mode_args(self) -> None:
+        parser = build_parser()
+        listen_args = parser.parse_args(
+            [
+                "mic-listen",
+                "--rt-pipeline-mode",
+                "stream",
+                "--rt-asr-scene",
+                "multi",
+                "--rt-asr-model",
+                "gummy-realtime-v1",
+                "--rt-translation-target-languages",
+                "zh,en",
+            ]
+        )
+        publish_args = parser.parse_args(
+            [
+                "mic-publish",
+                "--target-url",
+                "http://127.0.0.1:18765",
+                "--mic-upload-token",
+                "token",
+                "--device",
+                "Microphone (Realtek(R) Audio)",
+                "--rt-pipeline-mode",
+                "stream",
+                "--stream-frame-duration-ms",
+                "120",
+            ]
+        )
+        self.assertEqual(listen_args.rt_pipeline_mode, "stream")
+        self.assertEqual(listen_args.rt_asr_scene, "multi")
+        self.assertEqual(listen_args.rt_asr_model, "gummy-realtime-v1")
+        self.assertEqual(listen_args.rt_translation_target_languages, "zh,en")
+        self.assertEqual(publish_args.rt_pipeline_mode, "stream")
+        self.assertEqual(publish_args.stream_frame_duration_ms, 120)
 
 
 if __name__ == "__main__":
