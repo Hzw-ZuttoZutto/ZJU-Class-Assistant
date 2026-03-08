@@ -76,6 +76,28 @@ def _now_epoch_ms() -> int:
     return int(time.time() * 1000)
 
 
+_MIC_PUBLISH_WORK_DIR_PREFIX = ".mic_publish_chunks"
+
+
+def _build_timestamped_mic_publish_work_dir(*, now: datetime | None = None) -> Path:
+    ts = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return Path(f"{_MIC_PUBLISH_WORK_DIR_PREFIX}_{ts}")
+
+
+def _resolve_mic_publish_work_dir(raw_work_dir: object, *, now: datetime | None = None) -> tuple[Path, bool]:
+    text = str(raw_work_dir or "").strip()
+    if text:
+        return Path(text).expanduser().resolve(), False
+    return _build_timestamped_mic_publish_work_dir(now=now).expanduser().resolve(), True
+
+
+def _count_existing_mic_publish_chunks(work_dir: Path) -> int:
+    total = 0
+    for pattern in ("mic_*.mp3", "mic_*.wav"):
+        total += sum(1 for _ in work_dir.glob(pattern))
+    return total
+
+
 @dataclass
 class _RetryState:
     attempts: int = 0
@@ -791,12 +813,32 @@ def run_mic_listen(args: argparse.Namespace) -> int:
 
 
 def run_mic_publish(args: argparse.Namespace) -> int:
+    work_dir, auto_generated = _resolve_mic_publish_work_dir(getattr(args, "work_dir", ""))
+    if auto_generated:
+        print(f"[mic-publish] --work-dir not provided; auto-generated timestamp work_dir={work_dir}")
+
+    if work_dir.exists():
+        if not work_dir.is_dir():
+            print(f"[mic-publish] invalid work_dir (exists but is not directory): {work_dir}")
+            return 1
+        existing_chunks = _count_existing_mic_publish_chunks(work_dir)
+        print("[mic-publish][WARNING][HISTORY-POLLUTION] !!! target work_dir already exists !!!")
+        print(f"[mic-publish][WARNING][HISTORY-POLLUTION] path={work_dir}")
+        print(
+            f"[mic-publish][WARNING][HISTORY-POLLUTION] detected existing chunk files={existing_chunks}; "
+            "previous run files may be re-uploaded."
+        )
+        print(
+            "[mic-publish][WARNING][HISTORY-POLLUTION] use a fresh --work-dir/--worker-dir "
+            "if you need strict run isolation."
+        )
+
     publisher = MicPublisher(
         target_url=(args.target_url or "").strip(),
         upload_token=(args.mic_upload_token or "").strip(),
         device=(args.device or "").strip(),
         chunk_seconds=max(2.0, float(args.chunk_seconds)),
-        work_dir=Path(args.work_dir).expanduser().resolve(),
+        work_dir=work_dir,
         ffmpeg_bin=(args.ffmpeg_bin or "").strip(),
         request_timeout_sec=max(1.0, float(args.request_timeout_sec)),
         ready_age_sec=max(0.2, float(args.ready_age_sec)),

@@ -1,19 +1,28 @@
 from __future__ import annotations
 
+import argparse
 import json
 import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 import requests
 
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig
 from src.live.insight.openai_client import InsightModelResult
 from src.live.insight.stage_processor import InsightStageProcessor
-from src.live.mic import MicChunkProcessor, MicPublisher, build_mic_http_handler
+from src.live.mic import (
+    MicChunkProcessor,
+    MicPublisher,
+    _resolve_mic_publish_work_dir,
+    build_mic_http_handler,
+    run_mic_publish,
+)
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -68,6 +77,44 @@ class MicPipelineTests(unittest.TestCase):
         self.assertIn("audio=Microphone (USB)", cmd)
         self.assertIn("-segment_time", cmd)
         self.assertIn("10", cmd)
+
+    def test_resolve_mic_publish_work_dir_auto_timestamp(self) -> None:
+        work_dir, auto_generated = _resolve_mic_publish_work_dir("", now=datetime(2026, 3, 8, 12, 34, 56))
+        self.assertTrue(auto_generated)
+        self.assertEqual(work_dir.name, ".mic_publish_chunks_20260308_123456")
+
+    def test_run_mic_publish_warns_history_pollution_for_existing_work_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            existing_dir = Path(td) / ".mic_publish_chunks_run_01"
+            existing_dir.mkdir(parents=True, exist_ok=True)
+            (existing_dir / "mic_20260308_123456.mp3").write_bytes(b"old")
+
+            args = argparse.Namespace(
+                target_url="http://127.0.0.1:18765",
+                mic_upload_token="token",
+                device="Microphone (USB)",
+                chunk_seconds=10.0,
+                work_dir=str(existing_dir),
+                ffmpeg_bin="ffmpeg",
+                request_timeout_sec=10.0,
+                ready_age_sec=1.2,
+                retry_base_sec=0.5,
+                retry_max_sec=8.0,
+                scan_interval_sec=0.2,
+            )
+
+            publisher_instance = mock.Mock()
+            publisher_instance.run.return_value = 0
+
+            with mock.patch("src.live.mic.MicPublisher", return_value=publisher_instance) as publisher_cls:
+                with mock.patch("builtins.print") as print_mock:
+                    rc = run_mic_publish(args)
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(publisher_cls.called)
+            self.assertEqual(publisher_cls.call_args.kwargs["work_dir"], existing_dir.resolve())
+            printed = "\n".join(" ".join(str(part) for part in call.args) for call in print_mock.call_args_list)
+            self.assertIn("HISTORY-POLLUTION", printed)
 
     def test_mic_http_auth_size_dedupe_and_processing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

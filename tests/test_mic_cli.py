@@ -42,9 +42,27 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.mic_upload_token, "token")
         self.assertEqual(args.device, "Microphone (Realtek(R) Audio)")
         self.assertEqual(args.chunk_seconds, 10.0)
+        self.assertEqual(args.work_dir, "")
         self.assertEqual(args.request_timeout_sec, 10.0)
         self.assertEqual(args.retry_base_sec, 0.5)
         self.assertEqual(args.retry_max_sec, 8.0)
+
+    def test_mic_publish_worker_dir_alias(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "mic-publish",
+                "--target-url",
+                "http://127.0.0.1:18765",
+                "--mic-upload-token",
+                "token",
+                "--device",
+                "Microphone (Realtek(R) Audio)",
+                "--worker-dir",
+                ".mic_publish_chunks_run_01",
+            ]
+        )
+        self.assertEqual(args.work_dir, ".mic_publish_chunks_run_01")
 
     def test_mic_listen_profile_flag(self) -> None:
         parser = build_parser()

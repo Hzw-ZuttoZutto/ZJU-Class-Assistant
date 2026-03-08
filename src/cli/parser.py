@@ -421,8 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mic_publish.add_argument(
         "--work-dir",
-        default=".mic_publish_chunks",
-        help="Temporary local chunk directory",
+        "--worker-dir",
+        dest="work_dir",
+        default="",
+        help="Temporary local chunk directory; default auto-generated with current timestamp",
     )
     mic_publish.add_argument("--ffmpeg-bin", default="", help="ffmpeg binary path; default from PATH")
     mic_publish.add_argument(
