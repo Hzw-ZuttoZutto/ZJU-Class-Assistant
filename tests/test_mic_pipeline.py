@@ -48,8 +48,26 @@ class _FakeClient:
         keywords: KeywordConfig,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
+        debug_hook=None,
     ) -> InsightModelResult:
+        if debug_hook is not None:
+            debug_hook(
+                {
+                    "chunk_seconds": chunk_seconds,
+                    "current_text": current_text,
+                    "context_text": context_text,
+                    "system_prompt": "sys",
+                    "user_prompt": "usr",
+                    "request_payload_snapshot": {"model": analysis_model},
+                    "raw_response_text": '{"important": false}',
+                    "parsed_ok": True,
+                    "parsed_payload": {"important": False},
+                    "error": "",
+                    "duration_sec": 0.01,
+                }
+            )
         return InsightModelResult(
             important=False,
             summary="ok",
@@ -211,10 +229,13 @@ class MicPipelineTests(unittest.TestCase):
 
                 transcript_rows = _read_jsonl(base / "realtime_transcripts.jsonl")
                 insight_rows = _read_jsonl(base / "realtime_insights.jsonl")
+                trace_rows = _read_jsonl(base / "analysis_prompt_trace.jsonl")
                 self.assertEqual(len(transcript_rows), 1)
                 self.assertEqual(len(insight_rows), 1)
+                self.assertTrue(trace_rows)
                 self.assertEqual(transcript_rows[0]["status"], "ok")
                 self.assertEqual(insight_rows[0]["status"], "ok")
+                self.assertIn("历史上下文区", trace_rows[0]["context_text"])
             finally:
                 server.shutdown()
                 server.server_close()

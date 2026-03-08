@@ -12,7 +12,8 @@ from typing import Any, Callable
 
 import src.live.insight.stage_processor as stage_processor_module
 from src.live.insight.models import KeywordConfig
-from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
+from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient, invoke_analyze_text
+from src.live.insight.prompting import build_history_context_block
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore, file_sha256, keywords_hash
 from src.simulator.feed_scheduler import FeedScheduler
@@ -41,6 +42,7 @@ class Mode5ChunkSample:
     current_text: str
     context_text: str
     context_chunk_count: int
+    chunk_seconds: float
 
 
 class _Mode1VirtualClock:
@@ -83,7 +85,9 @@ class _Mode1ScriptClient:
         keywords: KeywordConfig,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
+        debug_hook=None,
     ) -> InsightModelResult:
         step = self._next_analysis_step()
         return self._run_analysis_step(step=step, timeout_sec=timeout_sec)
@@ -683,7 +687,11 @@ def _run_mode5_benchmark(
         chunk_seconds=chunk_seconds,
         stt_request_timeout_sec=stt_request_timeout_sec,
     )
-    all_samples = _build_mode5_samples(chunk_paths=chunk_paths, transcripts=transcripts)
+    all_samples = _build_mode5_samples(
+        chunk_paths=chunk_paths,
+        transcripts=transcripts,
+        chunk_seconds=chunk_seconds,
+    )
     selected_samples = _select_mode5_samples(
         samples=all_samples,
         profile=normalized_profile,
@@ -866,6 +874,7 @@ def _build_mode5_samples(
     *,
     chunk_paths: list[Path],
     transcripts: list[dict[str, Any]],
+    chunk_seconds: int,
 ) -> list[Mode5ChunkSample]:
     samples: list[Mode5ChunkSample] = []
     history: list[str] = []
@@ -878,7 +887,7 @@ def _build_mode5_samples(
         if not text:
             raise RuntimeError(f"mode5 transcript prepare produced empty transcript seq={seq}")
         history_lines = history[-18:]
-        context = "\n".join(history_lines) if history_lines else "无历史文本块"
+        context = build_history_context_block("\n".join(history_lines))
         samples.append(
             Mode5ChunkSample(
                 chunk_seq=seq,
@@ -886,6 +895,7 @@ def _build_mode5_samples(
                 current_text=text,
                 context_text=context,
                 context_chunk_count=len(history_lines),
+                chunk_seconds=float(chunk_seconds),
             )
         )
         history.append(f"[seq={seq}] {text}")
@@ -1080,7 +1090,10 @@ def _build_mode5_task(
                 "repeat": repeat_index,
                 "chunk_seq": sample.chunk_seq,
                 "chunk_file": sample.chunk_file,
+                "current_text": sample.current_text,
+                "context_text": sample.context_text,
                 "context_chunk_count": sample.context_chunk_count,
+                "chunk_seconds": float(sample.chunk_seconds),
                 "system_prompt": trace_payload.get("system_prompt", ""),
                 "user_prompt": trace_payload.get("user_prompt", ""),
                 "request_payload_snapshot": trace_payload.get("request_payload_snapshot", {}),
@@ -1146,26 +1159,16 @@ def _call_mode5_analyze_text(
     timeout_sec: float,
     trace_hook: Callable[[dict[str, Any]], None],
 ) -> InsightModelResult:
-    try:
-        return client.analyze_text(
-            analysis_model=analysis_model,
-            keywords=keywords,
-            current_text=sample.current_text,
-            context_text=sample.context_text,
-            timeout_sec=timeout_sec,
-            debug_hook=trace_hook,
-        )
-    except TypeError as exc:
-        # Backward-compat for fake clients used in unit tests.
-        if "debug_hook" not in str(exc):
-            raise
-        return client.analyze_text(
-            analysis_model=analysis_model,
-            keywords=keywords,
-            current_text=sample.current_text,
-            context_text=sample.context_text,
-            timeout_sec=timeout_sec,
-        )
+    return invoke_analyze_text(
+        client,
+        analysis_model=analysis_model,
+        keywords=keywords,
+        current_text=sample.current_text,
+        context_text=sample.context_text,
+        chunk_seconds=float(sample.chunk_seconds),
+        timeout_sec=timeout_sec,
+        debug_hook=trace_hook,
+    )
 
 
 def _capture_mode5_chunk_result(

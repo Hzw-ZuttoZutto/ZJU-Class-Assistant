@@ -88,6 +88,7 @@ class _Mode6ScriptClient:
         keywords: KeywordConfig,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
         debug_hook=None,
     ) -> InsightModelResult:
@@ -228,6 +229,15 @@ class _Mode6Processor(InsightStageProcessor):
             }
         )
 
+    def append_analysis_prompt_trace(self, payload: dict[str, Any]) -> None:
+        self.trace_writer(
+            {
+                "case_id": self.case.id,
+                "event": "analysis_prompt_trace",
+                **payload,
+            }
+        )
+
     def transcribe_with_retry(
         self,
         chunk_path: Path,
@@ -271,8 +281,11 @@ class _Mode6Processor(InsightStageProcessor):
     def analyze_with_retry(
         self,
         *,
+        chunk_seq: int,
+        chunk_file: str,
         current_text: str,
         context_text: str,
+        context_chunk_count: int,
         profile: dict[str, Any] | None = None,
     ) -> tuple[InsightModelResult | None, str, int, str, float]:
         started = self.clock.monotonic()
@@ -284,8 +297,11 @@ class _Mode6Processor(InsightStageProcessor):
             }
         )
         result, status, attempts, error, elapsed = super().analyze_with_retry(
+            chunk_seq=chunk_seq,
+            chunk_file=chunk_file,
             current_text=current_text,
             context_text=context_text,
+            context_chunk_count=context_chunk_count,
             profile=profile,
         )
         elapsed = self.clock.monotonic() - started

@@ -2,6 +2,7 @@ from src.live.insight.dingtalk import DingTalkNotifier, DingTalkNotifierMetadata
 from src.live.insight.models import (
     InsightEvent,
     KeywordConfig,
+    KeywordGroup,
     RealtimeInsightConfig,
     TranscriptChunk,
 )
@@ -11,6 +12,7 @@ from src.live.insight.service import RealtimeInsightService
 __all__ = [
     "InsightEvent",
     "KeywordConfig",
+    "KeywordGroup",
     "RealtimeInsightConfig",
     "TranscriptChunk",
     "DingTalkNotifier",

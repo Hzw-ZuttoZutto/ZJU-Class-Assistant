@@ -148,11 +148,14 @@ python -m src.main simulate \
 - 实时转写日志：`realtime_transcripts.jsonl`
 - 实时结构化日志：`realtime_insights.jsonl`
 - 实时中文镜像日志：`realtime_insights.log`
+- 分析 Prompt 调试日志：`analysis_prompt_trace.jsonl`
 
 实时提取说明：
 
 - 必须提供 `OPENAI_API_KEY`（推荐写在 `.account`）。
 - 关键词默认文件：`config/realtime_keywords.json`。
+- 关键词配置支持 `version: 2` 分组规则：按 `groups[*].id/label/aliases/phrases/detail_cues` 维护事件类型，新增分组只需改配置，不必改代码。
+- 旧版扁平字段 `important_terms/important_phrases/negative_terms` 仍可兼容读取。
 - 实时流程为两阶段：`10s音频 -> STT转写 -> 文本上下文分析`。
 - 紧急度为二分类：重要=95%，非重要或失败降级=10%。
 - 可选钉钉告警：仅 `watch` / `mic-listen` 支持，通过 `--rt-dingtalk-enabled` 开启。

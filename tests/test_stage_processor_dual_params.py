@@ -31,12 +31,30 @@ class _RetryClient:
         keywords: KeywordConfig,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
+        debug_hook=None,
     ) -> InsightModelResult:
         self.analysis_calls += 1
         self.analysis_timeouts.append(float(timeout_sec))
         if self.analysis_calls == 1:
             raise RuntimeError("analysis fail once")
+        if debug_hook is not None:
+            debug_hook(
+                {
+                    "chunk_seconds": chunk_seconds,
+                    "current_text": current_text,
+                    "context_text": context_text,
+                    "system_prompt": "sys",
+                    "user_prompt": "usr",
+                    "request_payload_snapshot": {"model": analysis_model},
+                    "raw_response_text": '{"important": false}',
+                    "parsed_ok": True,
+                    "parsed_payload": {"important": False},
+                    "error": "",
+                    "duration_sec": 0.01,
+                }
+            )
         return InsightModelResult(
             important=False,
             summary="ok",
@@ -57,8 +75,26 @@ class _AlwaysOkClient:
         keywords: KeywordConfig,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
+        debug_hook=None,
     ) -> InsightModelResult:
+        if debug_hook is not None:
+            debug_hook(
+                {
+                    "chunk_seconds": chunk_seconds,
+                    "current_text": current_text,
+                    "context_text": context_text,
+                    "system_prompt": "sys",
+                    "user_prompt": "usr",
+                    "request_payload_snapshot": {"model": analysis_model},
+                    "raw_response_text": '{"important": false}',
+                    "parsed_ok": True,
+                    "parsed_payload": {"important": False},
+                    "error": "",
+                    "duration_sec": 0.01,
+                }
+            )
         return InsightModelResult(
             important=False,
             summary="ok",
@@ -105,6 +141,11 @@ class StageProcessorDualParamTests(unittest.TestCase):
 
             transcript_payload = json.loads((base / "realtime_transcripts.jsonl").read_text(encoding="utf-8"))
             insight_payload = json.loads((base / "realtime_insights.jsonl").read_text(encoding="utf-8"))
+            trace_rows = [
+                json.loads(line)
+                for line in (base / "analysis_prompt_trace.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
 
             self.assertEqual(transcript_payload["status"], "ok")
             self.assertEqual(transcript_payload["attempt_count"], 2)
@@ -117,6 +158,10 @@ class StageProcessorDualParamTests(unittest.TestCase):
             self.assertAlmostEqual(client.analysis_timeouts[0], 3.0, places=3)
             self.assertEqual(insight_payload["context_reason"], "full18_ready")
             self.assertEqual(insight_payload["context_missing_ranges"], [])
+            self.assertTrue(trace_rows)
+            self.assertEqual(trace_rows[0]["attempt"], 2)
+            self.assertEqual(trace_rows[0]["chunk_seconds"], 10.0)
+            self.assertIn("历史上下文区", trace_rows[0]["context_text"])
 
     def test_startup_chunk_uses_ramped_recent_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -10,27 +11,97 @@ def format_local_ts(value: datetime) -> str:
 
 
 @dataclass
+class KeywordGroup:
+    id: str = ""
+    label: str = ""
+    aliases: list[str] = field(default_factory=list)
+    phrases: list[str] = field(default_factory=list)
+    detail_cues: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_json_dict(cls, payload: dict) -> "KeywordGroup":
+        if not isinstance(payload, dict):
+            return cls()
+        group_id = str(payload.get("id", "")).strip()
+        label = str(payload.get("label", "")).strip() or group_id
+        return cls(
+            id=group_id,
+            label=label,
+            aliases=_coerce_str_list(payload.get("aliases")),
+            phrases=_coerce_str_list(payload.get("phrases")),
+            detail_cues=_coerce_str_list(payload.get("detail_cues")),
+        )
+
+    def to_json_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "aliases": self.aliases,
+            "phrases": self.phrases,
+            "detail_cues": self.detail_cues,
+        }
+
+
+@dataclass
 class KeywordConfig:
     version: int = 1
     important_terms: list[str] = field(default_factory=list)
     important_phrases: list[str] = field(default_factory=list)
     negative_terms: list[str] = field(default_factory=list)
+    global_negative_terms: list[str] = field(default_factory=list)
+    groups: list[KeywordGroup] = field(default_factory=list)
 
     @classmethod
     def from_json_dict(cls, payload: dict) -> "KeywordConfig":
+        groups = _coerce_keyword_groups(payload.get("groups"))
+        negative_terms = _coerce_str_list(payload.get("negative_terms"))
+        global_negative_terms = _coerce_str_list(payload.get("global_negative_terms"))
+        if groups and not global_negative_terms and negative_terms:
+            global_negative_terms = list(negative_terms)
         return cls(
             version=int(payload.get("version", 1)),
             important_terms=_coerce_str_list(payload.get("important_terms")),
             important_phrases=_coerce_str_list(payload.get("important_phrases")),
-            negative_terms=_coerce_str_list(payload.get("negative_terms")),
+            negative_terms=negative_terms,
+            global_negative_terms=global_negative_terms,
+            groups=groups,
         )
 
     def prompt_text(self) -> str:
-        return (
-            f"important_terms={self.important_terms}\n"
-            f"important_phrases={self.important_phrases}\n"
-            f"negative_terms={self.negative_terms}"
-        )
+        return json.dumps(self.prompt_payload(), ensure_ascii=False, indent=2)
+
+    def prompt_payload(self) -> dict:
+        if self.has_grouped_rules:
+            return {
+                "rule_style": "grouped",
+                "global_negative_terms": self.effective_negative_terms(),
+                "groups": [group.to_json_dict() for group in self.groups],
+            }
+        return {
+            "rule_style": "legacy",
+            "important_terms": self.important_terms,
+            "important_phrases": self.important_phrases,
+            "negative_terms": self.effective_negative_terms(),
+        }
+
+    def to_json_dict(self) -> dict:
+        payload = {
+            "version": self.version,
+            "important_terms": self.important_terms,
+            "important_phrases": self.important_phrases,
+            "negative_terms": self.negative_terms,
+        }
+        if self.has_grouped_rules or self.global_negative_terms or self.version >= 2:
+            payload["global_negative_terms"] = self.effective_negative_terms()
+            payload["groups"] = [group.to_json_dict() for group in self.groups]
+        return payload
+
+    @property
+    def has_grouped_rules(self) -> bool:
+        return any(group.id for group in self.groups)
+
+    def effective_negative_terms(self) -> list[str]:
+        return list(self.global_negative_terms or self.negative_terms)
 
 
 def _coerce_str_list(value: object) -> list[str]:
@@ -42,6 +113,19 @@ def _coerce_str_list(value: object) -> list[str]:
         if text:
             out.append(text)
     return out
+
+
+def _coerce_keyword_groups(value: object) -> list[KeywordGroup]:
+    if not isinstance(value, list):
+        return []
+    groups: list[KeywordGroup] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        group = KeywordGroup.from_json_dict(item)
+        if group.id:
+            groups.append(group)
+    return groups
 
 
 @dataclass
@@ -135,6 +219,10 @@ class InsightEvent:
     reason: str
     attempt_count: int
     context_chunk_count: int
+    event_type: str = ""
+    headline: str = ""
+    immediate_action: str = ""
+    key_details: list[str] = field(default_factory=list)
     is_recovery: bool = False
     status: str = "ok"
     error: str = ""
@@ -160,6 +248,10 @@ class InsightEvent:
             "urgency_percent": self.urgency_percent,
             "summary": self.summary,
             "context_summary": self.context_summary,
+            "event_type": self.event_type,
+            "headline": self.headline,
+            "immediate_action": self.immediate_action,
+            "key_details": self.key_details,
             "matched_terms": self.matched_terms,
             "reason": self.reason,
             "attempt_count": self.attempt_count,

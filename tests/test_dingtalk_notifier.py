@@ -51,6 +51,10 @@ class DingTalkNotifierTests(unittest.TestCase):
             important=important,
             summary="有紧急签到",
             context_summary="老师要求立刻打开手机签到",
+            event_type="sign_in",
+            headline="立即签到",
+            immediate_action="现在打开手机完成签到",
+            key_details=["签到码：1234", "使用课堂派链接进入"],
             matched_terms=["签到"],
             reason="keyword_hit",
             attempt_count=1,
@@ -70,13 +74,20 @@ class DingTalkNotifierTests(unittest.TestCase):
         markdown = payload["markdown"]
 
         self.assertEqual(payload["msgtype"], "markdown")
-        self.assertEqual(markdown["title"], "[补发] 紧急")
-        self.assertIn("# [补发] 紧急", markdown["text"])
+        self.assertEqual(markdown["title"], "【补发】立即签到")
+        self.assertIn("# 【补发】立即签到", markdown["text"])
         self.assertIn("课程：高等数学 | 张老师", markdown["text"])
         self.assertIn("事件时间：2026-01-01 01:02:03", markdown["text"])
-        self.assertIn("summary: 有紧急签到", markdown["text"])
-        self.assertIn("context_summary: 老师要求立刻打开手机签到", markdown["text"])
-        self.assertIn("reason: keyword_hit", markdown["text"])
+        self.assertIn("## 当前最紧急", markdown["text"])
+        self.assertIn("有紧急签到", markdown["text"])
+        self.assertIn("## 现在就做", markdown["text"])
+        self.assertIn("现在打开手机完成签到", markdown["text"])
+        self.assertIn("## 关键细节", markdown["text"])
+        self.assertIn("签到码：1234", markdown["text"])
+        self.assertIn("## 判断依据", markdown["text"])
+        self.assertIn("老师要求立刻打开手机签到", markdown["text"])
+        self.assertNotIn("reason:", markdown["text"])
+        self.assertNotIn("matched_terms", markdown["text"])
 
     def test_build_payload_omits_course_line_without_metadata(self) -> None:
         notifier = DingTalkNotifier(
@@ -87,6 +98,18 @@ class DingTalkNotifierTests(unittest.TestCase):
 
         payload = notifier._build_payload(self._event())
         self.assertNotIn("课程：", payload["markdown"]["text"])
+
+    def test_build_payload_omits_key_detail_section_when_empty(self) -> None:
+        notifier = DingTalkNotifier(
+            webhook="https://example.test/robot/send?access_token=x",
+            secret="sec-123",
+            log_fn=lambda _msg: None,
+        )
+
+        event = self._event()
+        event.key_details = []
+        payload = notifier._build_payload(event)
+        self.assertNotIn("## 关键细节", payload["markdown"]["text"])
 
     def test_build_signed_webhook_url_contains_expected_query(self) -> None:
         notifier = DingTalkNotifier(

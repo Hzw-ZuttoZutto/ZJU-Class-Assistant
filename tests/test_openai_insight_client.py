@@ -33,9 +33,12 @@ class _FakeOpenAI:
         self.timeout = timeout
         self.audio = _FakeAudio()
         self.responses = _FakeResponses(
-            '{"important": true, "summary": "提到微积分", '
-            '"context_summary": "老师在讲极限和导数关系", '
-            '"matched_terms": ["微积分", "导数"], "reason": "keyword_hit"}'
+            '{"important": true, "summary": "老师刚布置了微积分作业", '
+            '"context_summary": "老师明确要求记录题号和提交方式", '
+            '"matched_terms": ["微积分", "作业"], "reason": "keyword_hit", '
+            '"event_type": "homework", "headline": "记录作业要求", '
+            '"immediate_action": "现在记下题号和提交方式", '
+            '"key_details": ["第一大题", "提交到学习平台"]}'
         )
 
 
@@ -56,11 +59,15 @@ class OpenAIInsightClientTests(unittest.TestCase):
                     keywords=KeywordConfig(important_terms=["微积分"]),
                     current_text=text,
                     context_text="无历史文本块",
+                    chunk_seconds=10.0,
                     timeout_sec=5.0,
                 )
         self.assertIn("微积分", text)
         self.assertTrue(result.important)
-        self.assertIn("导数", result.matched_terms)
+        self.assertEqual(result.event_type, "homework")
+        self.assertEqual(result.headline, "记录作业要求")
+        self.assertEqual(result.immediate_action, "现在记下题号和提交方式")
+        self.assertEqual(result.key_details, ["第一大题", "提交到学习平台"])
 
     def test_transcribe_timeout_raises(self) -> None:
         class _TimeoutAudioTranscriptions:
@@ -101,6 +108,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                     keywords=KeywordConfig(),
                     current_text="文本",
                     context_text="无历史文本块",
+                    chunk_seconds=10.0,
                     timeout_sec=2.0,
                 )
 
@@ -136,6 +144,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 keywords=KeywordConfig(),
                 current_text="现在开始签到",
                 context_text="无历史文本块",
+                chunk_seconds=10.0,
                 timeout_sec=2.0,
             )
             self.assertFalse(result.important)
@@ -197,6 +206,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 keywords=KeywordConfig(),
                 current_text="课程继续",
                 context_text="无历史文本块",
+                chunk_seconds=17.5,
                 timeout_sec=2.0,
                 debug_hook=events.append,
             )
@@ -205,6 +215,9 @@ class OpenAIInsightClientTests(unittest.TestCase):
         self.assertFalse(events[0]["parsed_ok"])
         self.assertIn("not-json", events[0]["raw_response_text"])
         self.assertTrue(events[1]["parsed_ok"])
+        self.assertEqual(events[1]["chunk_seconds"], 17.5)
+        self.assertEqual(events[1]["current_text"], "课程继续")
+        self.assertIn("无历史文本块", events[1]["context_text"])
         self.assertIn("request_payload_snapshot", events[1])
         self.assertGreater(
             int(events[1]["request_payload_snapshot"].get("max_output_tokens", 0)),
@@ -241,6 +254,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 keywords=KeywordConfig(),
                 current_text="class starts",
                 context_text="none",
+                chunk_seconds=10.0,
                 timeout_sec=2.0,
             )
             calls = client.client.responses.calls
@@ -285,6 +299,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 keywords=KeywordConfig(),
                 current_text="current",
                 context_text="history",
+                chunk_seconds=10.0,
                 timeout_sec=2.0,
             )
             self.assertFalse(result.important)

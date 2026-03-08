@@ -69,11 +69,29 @@ class _FakeClient:
         keywords,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
+        debug_hook=None,
     ):
         if self.timeout_on_analysis:
             raise TimeoutError("analysis timeout")
         self.analysis_contexts.append(context_text)
+        if debug_hook is not None:
+            debug_hook(
+                {
+                    "chunk_seconds": chunk_seconds,
+                    "current_text": current_text,
+                    "context_text": context_text,
+                    "system_prompt": "sys",
+                    "user_prompt": "usr",
+                    "request_payload_snapshot": {"model": analysis_model},
+                    "raw_response_text": '{"important": true}',
+                    "parsed_ok": True,
+                    "parsed_payload": {"important": self.important},
+                    "error": "",
+                    "duration_sec": 0.01,
+                }
+            )
         return InsightModelResult(
             important=self.important,
             summary="提到了微积分重点",
@@ -161,6 +179,16 @@ class RealtimeInsightServiceTests(unittest.TestCase):
             self.assertEqual(transcript_payload["status"], "ok")
             self.assertEqual(insight_payload["status"], "ok")
             self.assertEqual(insight_payload["chunk_seq"], 1)
+            trace_rows = [
+                json.loads(line)
+                for line in (session_dir / "analysis_prompt_trace.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(trace_rows)
+            self.assertEqual(trace_rows[0]["chunk_seconds"], 10.0)
+            self.assertIn("历史上下文区", trace_rows[0]["context_text"])
+            self.assertIn("system_prompt", trace_rows[0])
+            self.assertIn("user_prompt", trace_rows[0])
             self.assertEqual(
                 text_log,
                 "紧急!\n具体内容：提到了微积分重点\n具体上下文：老师在讲导数与极限关系\n\n",
@@ -252,6 +280,7 @@ class RealtimeInsightServiceTests(unittest.TestCase):
             service._process_chunk_task(1, chunk)
 
             self.assertTrue(client.analysis_contexts)
+            self.assertIn("历史上下文区", client.analysis_contexts[-1])
             self.assertIn("无历史文本块", client.analysis_contexts[-1])
 
     def test_analysis_timeout_drop(self) -> None:

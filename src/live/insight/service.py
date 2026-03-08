@@ -18,7 +18,8 @@ from src.live.insight.models import (
     TranscriptChunk,
     format_local_ts,
 )
-from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
+from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient, invoke_analyze_text
+from src.live.insight.prompting import build_history_context_block
 from src.live.insight.stage_processor import InsightStageProcessor
 
 
@@ -66,6 +67,7 @@ class RealtimeInsightService:
         self._insight_jsonl_path = self.session_dir / "realtime_insights.jsonl"
         self._text_log_path = self.session_dir / "realtime_insights.log"
         self._transcript_jsonl_path = self.session_dir / "realtime_transcripts.jsonl"
+        self._analysis_prompt_trace_path = self.session_dir / "analysis_prompt_trace.jsonl"
 
     def start(self) -> None:
         if not self.config.enabled:
@@ -261,8 +263,11 @@ class RealtimeInsightService:
         context_chunk_count = len(context_chunks)
 
         result, analysis_status, analysis_attempt, analysis_error = self._analyze_with_retry(
+            chunk_seq=chunk_seq,
+            chunk_file=chunk_path.name,
             current_text=transcript_text,
             context_text=context_text,
+            context_chunk_count=context_chunk_count,
         )
         if result is None:
             self._write_drop_insight(
@@ -332,8 +337,11 @@ class RealtimeInsightService:
     def _analyze_with_retry(
         self,
         *,
+        chunk_seq: int,
+        chunk_file: str,
         current_text: str,
         context_text: str,
+        context_chunk_count: int,
     ) -> tuple[InsightModelResult | None, str, int, str]:
         if self._client is None:
             return None, "analysis_drop_error", 0, "OpenAI client unavailable"
@@ -347,12 +355,41 @@ class RealtimeInsightService:
                 return None, "analysis_drop_timeout", attempt - 1, last_error or "stage timeout"
             per_call_timeout = min(max(1.0, float(self.config.analysis_request_timeout_sec)), remaining)
             try:
-                result = self._client.analyze_text(
+                debug_index = 0
+
+                def trace_hook(trace_payload: dict[str, object]) -> None:
+                    nonlocal debug_index
+                    debug_index += 1
+                    self._append_analysis_prompt_trace(
+                        {
+                            "chunk_seq": int(chunk_seq),
+                            "chunk_file": str(chunk_file),
+                            "attempt": int(attempt),
+                            "trace_index": int(debug_index),
+                            "context_chunk_count": int(context_chunk_count),
+                            "chunk_seconds": float(self.config.chunk_seconds),
+                            "current_text": current_text,
+                            "context_text": context_text,
+                            "system_prompt": str(trace_payload.get("system_prompt", "")),
+                            "user_prompt": str(trace_payload.get("user_prompt", "")),
+                            "request_payload_snapshot": trace_payload.get("request_payload_snapshot", {}),
+                            "raw_response_text": str(trace_payload.get("raw_response_text", "")),
+                            "parsed_ok": bool(trace_payload.get("parsed_ok", False)),
+                            "parsed_payload": trace_payload.get("parsed_payload", {}),
+                            "error": str(trace_payload.get("error", "")),
+                            "duration_sec": float(trace_payload.get("duration_sec", 0.0)),
+                        }
+                    )
+
+                result = invoke_analyze_text(
+                    self._client,
                     analysis_model=self.config.model,
                     keywords=self._keywords,
                     current_text=current_text,
                     context_text=context_text,
+                    chunk_seconds=float(self.config.chunk_seconds),
                     timeout_sec=per_call_timeout,
+                    debug_hook=trace_hook,
                 )
                 return result, "ok", attempt, ""
             except Exception as exc:
@@ -406,11 +443,11 @@ class RealtimeInsightService:
     @staticmethod
     def _render_history_context(history: list[TranscriptChunk]) -> str:
         if not history:
-            return "无历史文本块"
+            return build_history_context_block("")
         lines: list[str] = []
         for item in history:
             lines.append(f"[seq={item.chunk_seq}][{item.ts_local}] {item.text}")
-        return "\n".join(lines)
+        return build_history_context_block("\n".join(lines))
 
     def _append_transcript(self, transcript: TranscriptChunk) -> None:
         payload = transcript.to_json_dict()
@@ -493,6 +530,12 @@ class RealtimeInsightService:
                 self._log(
                     f"[rt-dingtalk] enqueue failed seq={event.chunk_seq} chunk={event.chunk_file} error={exc}"
                 )
+
+    def _append_analysis_prompt_trace(self, payload: dict[str, object]) -> None:
+        with self._io_lock:
+            with self._analysis_prompt_trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False))
+                handle.write("\n")
 
     def _get_or_assign_chunk_seq(self, chunk_name: str) -> int:
         with self._state_lock:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,6 +46,7 @@ class _FakeClient:
         keywords,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
         debug_hook=None,
     ):
@@ -53,6 +55,9 @@ class _FakeClient:
         if debug_hook is not None:
             debug_hook(
                 {
+                    "chunk_seconds": chunk_seconds,
+                    "current_text": current_text,
+                    "context_text": context_text,
                     "system_prompt": "sys",
                     "user_prompt": "usr",
                     "request_payload_snapshot": {"model": analysis_model, "max_output_tokens": 1200},
@@ -208,6 +213,7 @@ class SimulatorBenchmarkTests(unittest.TestCase):
             self.assertTrue(samples)
             self.assertEqual(samples[0]["current_text"], "老师强调傅里叶变换定义")
             self.assertNotIn("模拟文本", samples[0]["current_text"])
+            self.assertIn("历史上下文区", samples[1]["context_preview"])
             self.assertIn("[seq=1] 老师强调傅里叶变换定义", samples[1]["context_preview"])
 
     def test_mode5_context_window_is_limited_to_18_history_chunks(self) -> None:
@@ -241,7 +247,8 @@ class SimulatorBenchmarkTests(unittest.TestCase):
             serial_inputs = client.analyze_inputs[:20]
             self.assertEqual(len(serial_inputs), 20)
             context_text = serial_inputs[19]["context_text"]
-            self.assertEqual(len(context_text.splitlines()), 18)
+            self.assertIn("历史上下文区", context_text)
+            self.assertEqual(context_text.count("[seq="), 18)
             self.assertIn("[seq=2] t2", context_text)
             self.assertIn("[seq=19] t19", context_text)
             self.assertNotIn("[seq=1] t1", context_text)
@@ -362,6 +369,7 @@ class SimulatorBenchmarkTests(unittest.TestCase):
             self.assertEqual(client.analyze_calls, 4)
             self.assertEqual(len(result.summary["chunk_results"]), 4)
             self.assertTrue(all(item["chunk_seq"] == 3 for item in result.summary["chunk_results"]))
+            self.assertIn("历史上下文区", client.analyze_inputs[0]["context_text"])
             self.assertIn("[seq=1] tx-1", client.analyze_inputs[0]["context_text"])
             self.assertIn("[seq=2] tx-2", client.analyze_inputs[0]["context_text"])
 
@@ -404,6 +412,10 @@ class SimulatorBenchmarkTests(unittest.TestCase):
             self.assertTrue(trace_file.exists())
             trace_lines = [line for line in trace_file.read_text(encoding="utf-8").splitlines() if line.strip()]
             self.assertEqual(len(trace_lines), 3)
+            trace_payload = json.loads(trace_lines[0])
+            self.assertIn("current_text", trace_payload)
+            self.assertIn("context_text", trace_payload)
+            self.assertIn("chunk_seconds", trace_payload)
 
     def test_mode5_transcribe_failure_raises_and_stops_analysis(self) -> None:
         with tempfile.TemporaryDirectory() as td:

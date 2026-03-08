@@ -7,7 +7,7 @@ from typing import Any
 
 from src.live.insight.models import KeywordConfig
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v3"
 
 
 def file_sha256(path: Path) -> str:
@@ -21,12 +21,7 @@ def file_sha256(path: Path) -> str:
 
 
 def keywords_hash(keywords: KeywordConfig) -> str:
-    payload = {
-        "version": keywords.version,
-        "important_terms": keywords.important_terms,
-        "important_phrases": keywords.important_phrases,
-        "negative_terms": keywords.negative_terms,
-    }
+    payload = keywords.to_json_dict()
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

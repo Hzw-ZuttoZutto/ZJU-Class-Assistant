@@ -15,7 +15,8 @@ from src.live.insight.models import (
     format_local_ts,
 )
 from src.live.insight.dingtalk import DingTalkNotifier
-from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
+from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient, invoke_analyze_text
+from src.live.insight.prompting import build_history_context_block
 
 
 def _now_epoch_ms() -> int:
@@ -50,6 +51,7 @@ class InsightStageProcessor:
         self._insight_jsonl_path = self.session_dir / "realtime_insights.jsonl"
         self._text_log_path = self.session_dir / "realtime_insights.log"
         self._transcript_jsonl_path = self.session_dir / "realtime_transcripts.jsonl"
+        self._analysis_prompt_trace_path = self.session_dir / "analysis_prompt_trace.jsonl"
 
     def process_chunk(self, chunk_seq: int, chunk_path: Path, profile: dict[str, Any] | None = None) -> None:
         if profile is not None:
@@ -112,8 +114,11 @@ class InsightStageProcessor:
             profile["context_missing_ranges"] = list(context_missing_ranges)
 
         result, analysis_status, analysis_attempt, analysis_error, analysis_elapsed_sec = self.analyze_with_retry(
+            chunk_seq=chunk_seq,
+            chunk_file=chunk_path.name,
             current_text=transcript_text,
             context_text=context_text,
+            context_chunk_count=context_chunk_count,
             profile=profile,
         )
         if result is None:
@@ -212,6 +217,10 @@ class InsightStageProcessor:
                 context_summary=str(analysis_result.get("context_summary", "")).strip(),
                 matched_terms=[str(x).strip() for x in analysis_result.get("matched_terms", []) if str(x).strip()],
                 reason=str(analysis_result.get("reason", "")).strip(),
+                event_type=str(analysis_result.get("event_type", "")).strip(),
+                headline=str(analysis_result.get("headline", "")).strip(),
+                immediate_action=str(analysis_result.get("immediate_action", "")).strip(),
+                key_details=[str(x).strip() for x in analysis_result.get("key_details", []) if str(x).strip()],
             )
 
         if normalized_a_status != "ok" or analysis_result is None:
@@ -342,8 +351,11 @@ class InsightStageProcessor:
     def analyze_with_retry(
         self,
         *,
+        chunk_seq: int,
+        chunk_file: str,
         current_text: str,
         context_text: str,
+        context_chunk_count: int,
         profile: dict[str, Any] | None = None,
     ) -> tuple[InsightModelResult | None, str, int, str, float]:
         if self.client is None:
@@ -387,15 +399,44 @@ class InsightStageProcessor:
                 )
             per_call_timeout = min(max(1.0, float(self.config.analysis_request_timeout_sec)), remaining)
             try:
+                debug_index = 0
+
+                def trace_hook(trace_payload: dict[str, Any]) -> None:
+                    nonlocal debug_index
+                    debug_index += 1
+                    self.append_analysis_prompt_trace(
+                        {
+                            "chunk_seq": int(chunk_seq),
+                            "chunk_file": str(chunk_file),
+                            "attempt": int(attempt),
+                            "trace_index": int(debug_index),
+                            "context_chunk_count": int(context_chunk_count),
+                            "chunk_seconds": float(self.config.chunk_seconds),
+                            "current_text": current_text,
+                            "context_text": context_text,
+                            "system_prompt": str(trace_payload.get("system_prompt", "")),
+                            "user_prompt": str(trace_payload.get("user_prompt", "")),
+                            "request_payload_snapshot": trace_payload.get("request_payload_snapshot", {}),
+                            "raw_response_text": str(trace_payload.get("raw_response_text", "")),
+                            "parsed_ok": bool(trace_payload.get("parsed_ok", False)),
+                            "parsed_payload": trace_payload.get("parsed_payload", {}),
+                            "error": str(trace_payload.get("error", "")),
+                            "duration_sec": float(trace_payload.get("duration_sec", 0.0)),
+                        }
+                    )
+
                 if profile is not None and not first_request_marked:
                     profile["analysis_request_ts_ms"] = _now_epoch_ms()
                     first_request_marked = True
-                result = self.client.analyze_text(
+                result = invoke_analyze_text(
+                    self.client,
                     analysis_model=self.config.model,
                     keywords=self.keywords,
                     current_text=current_text,
                     context_text=context_text,
+                    chunk_seconds=float(self.config.chunk_seconds),
                     timeout_sec=per_call_timeout,
+                    debug_hook=trace_hook,
                 )
                 elapsed = max(0.0, time.monotonic() - started)
                 if profile is not None:
@@ -551,19 +592,19 @@ class InsightStageProcessor:
     ) -> str:
         if not history:
             if not mark_missing:
-                return "无历史文本块"
+                return build_history_context_block("")
             if chunk_seq is None or chunk_seq <= 1:
-                return "无历史文本块"
+                return build_history_context_block("")
             target = max(1, int(target_chunks or 18))
             start = max(1, chunk_seq - target)
             missing = f"{start}" if start == (chunk_seq - 1) else f"{start}-{chunk_seq - 1}"
-            return f"[missing seq={missing}] 历史文本缺失"
+            return build_history_context_block(f"[missing seq={missing}] 历史文本缺失")
 
         if not mark_missing or chunk_seq is None:
             lines: list[str] = []
             for item in history:
                 lines.append(f"[seq={item.chunk_seq}][{item.ts_local}] {item.text}")
-            return "\n".join(lines)
+            return build_history_context_block("\n".join(lines))
 
         target = max(1, int(target_chunks or 18))
         start = max(1, chunk_seq - target)
@@ -587,8 +628,8 @@ class InsightStageProcessor:
             missing = f"{missing_start}" if missing_start == end else f"{missing_start}-{end}"
             lines.append(f"[missing seq={missing}] 历史文本缺失")
         if not lines:
-            return "无历史文本块"
-        return "\n".join(lines)
+            return build_history_context_block("")
+        return build_history_context_block("\n".join(lines))
 
     @staticmethod
     def apply_visibility_mask(
@@ -671,6 +712,10 @@ class InsightStageProcessor:
             important=False,
             summary=summary,
             context_summary="无重要内容",
+            event_type="none",
+            headline="",
+            immediate_action="",
+            key_details=[],
             matched_terms=[],
             reason=status,
             attempt_count=attempt_count,
@@ -700,6 +745,10 @@ class InsightStageProcessor:
     ) -> None:
         summary = result.summary or "当前没有什么重要内容"
         context_summary = result.context_summary or "无重要内容"
+        event_type = self._normalize_event_type(result)
+        headline = self._normalize_headline(result=result, summary=summary)
+        immediate_action = self._normalize_immediate_action(result=result, summary=summary, headline=headline)
+        key_details = self._normalize_key_details(getattr(result, "key_details", []))
         event = InsightEvent(
             ts=ts,
             chunk_seq=chunk_seq,
@@ -708,6 +757,10 @@ class InsightStageProcessor:
             important=bool(result.important),
             summary=summary,
             context_summary=context_summary,
+            event_type=event_type,
+            headline=headline,
+            immediate_action=immediate_action,
+            key_details=key_details,
             matched_terms=result.matched_terms,
             reason=result.reason,
             attempt_count=attempt_count,
@@ -743,6 +796,50 @@ class InsightStageProcessor:
         if profile is not None:
             profile["insight_console_log_ts_ms"] = _now_epoch_ms()
         self._notify_dingtalk(event)
+
+    def append_analysis_prompt_trace(self, payload: dict[str, Any]) -> None:
+        with self._io_lock:
+            with self._analysis_prompt_trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False))
+                handle.write("\n")
+
+    @staticmethod
+    def _normalize_event_type(result: InsightModelResult) -> str:
+        event_type = str(getattr(result, "event_type", "") or "").strip()
+        if event_type:
+            return event_type
+        return "general" if bool(result.important) else "none"
+
+    @staticmethod
+    def _normalize_headline(*, result: InsightModelResult, summary: str) -> str:
+        if not bool(result.important):
+            return ""
+        for candidate in (getattr(result, "headline", ""), getattr(result, "immediate_action", ""), summary):
+            text = str(candidate or "").strip()
+            if text and text not in {"当前没有什么重要内容", "无重要内容"}:
+                return text
+        return ""
+
+    @staticmethod
+    def _normalize_immediate_action(*, result: InsightModelResult, summary: str, headline: str) -> str:
+        if not bool(result.important):
+            return ""
+        for candidate in (getattr(result, "immediate_action", ""), summary, headline):
+            text = str(candidate or "").strip()
+            if text and text not in {"当前没有什么重要内容", "无重要内容"}:
+                return text
+        return ""
+
+    @staticmethod
+    def _normalize_key_details(value: list[str] | None) -> list[str]:
+        details: list[str] = []
+        for item in list(value or []):
+            text = str(item or "").strip()
+            if text and text not in details:
+                details.append(text)
+            if len(details) >= 3:
+                break
+        return details
 
     def close(self) -> None:
         if self.notifier is not None:

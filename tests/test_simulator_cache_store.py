@@ -27,7 +27,7 @@ class SimulatorCacheStoreTests(unittest.TestCase):
             "chunk_seconds": 10,
         }
         key1 = SimulationCacheStore.build_cache_key(stage="stt", prompt_version=PROMPT_VERSION, **base)
-        key2 = SimulationCacheStore.build_cache_key(stage="stt", prompt_version="v2", **base)
+        key2 = SimulationCacheStore.build_cache_key(stage="stt", prompt_version="v4", **base)
         key3 = SimulationCacheStore.build_cache_key(stage="analysis", prompt_version=PROMPT_VERSION, **base)
         self.assertNotEqual(key1, key2)
         self.assertNotEqual(key1, key3)
@@ -42,6 +42,14 @@ class SimulatorCacheStoreTests(unittest.TestCase):
 
         k = KeywordConfig(important_terms=["a"], important_phrases=["b"], negative_terms=["c"])
         self.assertTrue(keywords_hash(k))
+        grouped = KeywordConfig.from_json_dict(
+            {
+                "version": 2,
+                "global_negative_terms": ["n"],
+                "groups": [{"id": "x", "label": "X", "aliases": ["a"], "phrases": [], "detail_cues": ["b"]}],
+            }
+        )
+        self.assertTrue(keywords_hash(grouped))
 
 
 if __name__ == "__main__":

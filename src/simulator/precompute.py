@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Callable
 
 from src.live.insight.models import KeywordConfig, format_local_ts
-from src.live.insight.openai_client import OpenAIInsightClient
+from src.live.insight.openai_client import OpenAIInsightClient, invoke_analyze_text
+from src.live.insight.prompting import build_history_context_block
 from src.simulator.cache_store import SimulationCacheStore, file_sha256, keywords_hash
 
 
@@ -129,13 +130,15 @@ def run_precompute(
             )
             continue
 
-        context_text = "\n".join(history_lines) if history_lines else "无历史文本块"
+        context_text = build_history_context_block("\n".join(history_lines))
         try:
-            result = client.analyze_text(
+            result = invoke_analyze_text(
+                client,
                 analysis_model=analysis_model,
                 keywords=keywords,
                 current_text=text,
                 context_text=context_text,
+                chunk_seconds=float(chunk_seconds),
                 timeout_sec=max(1.0, float(analysis_request_timeout_sec)),
             )
             cache_store.store_analysis(

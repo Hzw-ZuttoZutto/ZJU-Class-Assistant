@@ -26,7 +26,9 @@ class _FakeClient:
         keywords,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
+        debug_hook=None,
     ):
         self.analysis_calls += 1
         return InsightModelResult(

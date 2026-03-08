@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,6 +33,16 @@ class InsightModelResult:
     context_summary: str
     matched_terms: list[str]
     reason: str
+    event_type: str = ""
+    headline: str = ""
+    immediate_action: str = ""
+    key_details: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.event_type = str(self.event_type or "").strip()
+        self.headline = str(self.headline or "").strip()
+        self.immediate_action = str(self.immediate_action or "").strip()
+        self.key_details = _normalize_key_details(self.key_details)
 
 
 class OpenAIInsightClient:
@@ -73,16 +83,18 @@ class OpenAIInsightClient:
         keywords: KeywordConfig,
         current_text: str,
         context_text: str,
+        chunk_seconds: float,
         timeout_sec: float,
         debug_hook: Callable[[dict[str, Any]], None] | None = None,
     ) -> InsightModelResult:
         if not analysis_model:
             raise ValueError("analysis_model is empty")
-        system_prompt = build_system_prompt()
+        system_prompt = build_system_prompt(chunk_seconds)
         user_prompt = build_user_prompt(
             keywords=keywords,
             current_text=current_text,
             context_text=context_text,
+            chunk_seconds=chunk_seconds,
         )
         request_payload = _build_analysis_request_payload(
             analysis_model=analysis_model,
@@ -94,6 +106,9 @@ class OpenAIInsightClient:
             request_payload=request_payload,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            current_text=current_text,
+            context_text=context_text,
+            chunk_seconds=chunk_seconds,
             debug_hook=debug_hook,
         )
         return InsightModelResult(
@@ -102,6 +117,10 @@ class OpenAIInsightClient:
             context_summary=str(parsed_payload.get("context_summary", "")).strip(),
             matched_terms=_to_str_list(parsed_payload.get("matched_terms")),
             reason=str(parsed_payload.get("reason", "")).strip(),
+            event_type=str(parsed_payload.get("event_type", "")).strip(),
+            headline=str(parsed_payload.get("headline", "")).strip(),
+            immediate_action=str(parsed_payload.get("immediate_action", "")).strip(),
+            key_details=_normalize_key_details(parsed_payload.get("key_details")),
         )
 
     def _run_analysis_attempt(
@@ -110,6 +129,9 @@ class OpenAIInsightClient:
         request_payload: dict[str, Any],
         system_prompt: str,
         user_prompt: str,
+        current_text: str,
+        context_text: str,
+        chunk_seconds: float,
         debug_hook: Callable[[dict[str, Any]], None] | None,
     ) -> dict:
         response = None
@@ -131,6 +153,9 @@ class OpenAIInsightClient:
             _emit_analysis_debug(
                 hook=debug_hook,
                 payload={
+                    "chunk_seconds": float(chunk_seconds),
+                    "current_text": current_text,
+                    "context_text": context_text,
                     "system_prompt": system_prompt,
                     "user_prompt": user_prompt,
                     "request_payload_snapshot": effective_request,
@@ -149,6 +174,9 @@ class OpenAIInsightClient:
         _emit_analysis_debug(
             hook=debug_hook,
             payload={
+                "chunk_seconds": float(chunk_seconds),
+                "current_text": current_text,
+                "context_text": context_text,
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "request_payload_snapshot": effective_request,
@@ -167,6 +195,9 @@ class OpenAIInsightClient:
                 request_payload=retry_payload,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
+                current_text=current_text,
+                context_text=context_text,
+                chunk_seconds=chunk_seconds,
                 debug_hook=debug_hook,
             )
         raise parse_error
@@ -199,6 +230,43 @@ class OpenAIInsightClient:
                 value_adjusted.add(adjusted_key)
                 request = adjusted_request
         return self.client.responses.create(**request), dict(request)
+
+
+def invoke_analyze_text(
+    client: Any,
+    *,
+    analysis_model: str,
+    keywords: KeywordConfig,
+    current_text: str,
+    context_text: str,
+    chunk_seconds: float,
+    timeout_sec: float,
+    debug_hook: Callable[[dict[str, Any]], None] | None = None,
+) -> InsightModelResult:
+    request_kwargs: dict[str, Any] = {
+        "analysis_model": analysis_model,
+        "keywords": keywords,
+        "current_text": current_text,
+        "context_text": context_text,
+        "chunk_seconds": chunk_seconds,
+        "timeout_sec": timeout_sec,
+    }
+    if debug_hook is not None:
+        request_kwargs["debug_hook"] = debug_hook
+
+    current_kwargs = dict(request_kwargs)
+    removed: set[str] = set()
+    for _ in range(3):
+        try:
+            return client.analyze_text(**current_kwargs)
+        except TypeError as exc:
+            unsupported = _extract_unexpected_keyword(exc)
+            if not unsupported or unsupported in removed or unsupported not in current_kwargs:
+                raise
+            removed.add(unsupported)
+            current_kwargs = dict(current_kwargs)
+            current_kwargs.pop(unsupported, None)
+    return client.analyze_text(**current_kwargs)
 
 
 def _extract_transcript_text(response: Any) -> str:
@@ -360,6 +428,20 @@ def _to_str_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _normalize_key_details(value: Any) -> list[str]:
+    details = _to_str_list(value)
+    if len(details) <= 3:
+        return details
+    return details[:3]
+
+
+def _extract_unexpected_keyword(exc: TypeError) -> str:
+    match = re.search(r"unexpected keyword argument '([^']+)'", str(exc))
+    if match is None:
+        return ""
+    return str(match.group(1)).strip()
 
 
 def _build_analysis_request_payload(

@@ -194,8 +194,11 @@ python -m src.main watch \
 - 实时转写日志：`realtime_transcripts.jsonl`
 - 实时结构化日志：`realtime_insights.jsonl`
 - 实时中文镜像日志：`realtime_insights.log`
+- 分析 Prompt 调试日志：`analysis_prompt_trace.jsonl`
 - 实时音频切片目录：`_rt_chunks/`
 - 实时流程：`10s音频 -> STT转写 -> 文本上下文分析`
+- 关键词配置默认使用 `config/realtime_keywords.json`，支持 `version: 2` 分组规则；新增事件分组只需追加 `groups` 项。
+- 旧版 `important_terms/important_phrases/negative_terms` 配置仍兼容。
 - 可选钉钉告警：通过 `--rt-dingtalk-enabled` 开启，仅转发 `important=true` 事件。
 - 钉钉凭据读取：`.account` 中 `dingtalk_webhook` / `dingtalk_secret`，或环境变量 `DINGTALK_WEBHOOK` / `DINGTALK_SECRET`。
 

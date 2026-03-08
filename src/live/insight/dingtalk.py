@@ -159,7 +159,7 @@ class DingTalkNotifier:
         return f"{self.webhook}{separator}timestamp={int(timestamp_ms)}&sign={sign}"
 
     def _build_payload(self, event: InsightEvent) -> dict:
-        title = "[补发] 紧急" if event.is_recovery else "紧急"
+        title = self._title_text(event)
         text = self._build_markdown_text(event)
         return {
             "msgtype": "markdown",
@@ -170,20 +170,99 @@ class DingTalkNotifier:
         }
 
     def _build_markdown_text(self, event: InsightEvent) -> str:
-        heading = "# [补发] 紧急" if event.is_recovery else "# 紧急"
+        heading = f"# {self._title_text(event)}"
         lines = [heading, ""]
         course_line = self._course_line()
         if course_line:
             lines.append(f"- 课程：{course_line}")
-        lines.extend(
-            [
-                f"- 事件时间：{self._event_time_text(event)}",
-                f"- summary: {event.summary}",
-                f"- context_summary: {event.context_summary}",
-                f"- reason: {event.reason}",
-            ]
-        )
+        lines.append(f"- 事件时间：{self._event_time_text(event)}")
+        lines.append("")
+
+        self._append_text_section(lines, "当前最紧急", self._summary_text(event))
+        self._append_text_section(lines, "现在就做", self._action_text(event))
+
+        details = self._detail_lines(event)
+        if details:
+            lines.append("## 关键细节")
+            for detail in details:
+                lines.append(f"- {detail}")
+            lines.append("")
+
+        evidence = self._evidence_text(event)
+        self._append_text_section(lines, "判断依据", evidence)
+
+        background = self._background_text(event, evidence=evidence)
+        if background:
+            self._append_text_section(lines, "背景", background)
+
+        while lines and not lines[-1]:
+            lines.pop()
         return "\n".join(lines)
+
+    def _title_text(self, event: InsightEvent) -> str:
+        headline = (event.headline or "").strip() or (event.immediate_action or "").strip() or (event.summary or "").strip()
+        if not headline:
+            headline = "紧急提醒"
+        if event.is_recovery:
+            return f"【补发】{headline}"
+        return headline
+
+    @staticmethod
+    def _append_text_section(lines: list[str], heading: str, body: str) -> None:
+        text = str(body or "").strip()
+        if not text:
+            return
+        lines.append(f"## {heading}")
+        lines.append(text)
+        lines.append("")
+
+    def _summary_text(self, event: InsightEvent) -> str:
+        return (event.summary or "").strip() or "有新的重要事项"
+
+    def _action_text(self, event: InsightEvent) -> str:
+        return (
+            (event.immediate_action or "").strip()
+            or (event.headline or "").strip()
+            or (event.summary or "").strip()
+        )
+
+    def _detail_lines(self, event: InsightEvent) -> list[str]:
+        details: list[str] = []
+        for item in list(event.key_details or []):
+            text = str(item or "").strip()
+            if text and text not in details:
+                details.append(text)
+            if len(details) >= 3:
+                break
+        return details
+
+    def _evidence_text(self, event: InsightEvent) -> str:
+        context_summary = (event.context_summary or "").strip()
+        if context_summary and context_summary != "无重要内容":
+            return context_summary
+
+        reason = str(event.reason or "").strip().lower()
+        if reason == "continuation_detail":
+            return "前文已经明确提到同一重要事项，当前片段在补充执行细节。"
+        if reason == "keyword_hit":
+            return "当前片段出现了明确的重要事项信号。"
+        if reason == "none":
+            return ""
+        if (event.event_type or "").strip() and event.important:
+            return "结合当前片段和最近上下文，判断为需要立即关注的课堂事项。"
+        return ""
+
+    def _background_text(self, event: InsightEvent, *, evidence: str) -> str:
+        context_summary = (event.context_summary or "").strip()
+        if not context_summary or context_summary == "无重要内容":
+            return ""
+        if context_summary == evidence:
+            return ""
+        if context_summary == (event.summary or "").strip():
+            return ""
+        if context_summary == (event.immediate_action or "").strip():
+            return ""
+        return context_summary
 
     def _course_line(self) -> str:
         parts = [self.metadata.course_title.strip(), self.metadata.teacher_name.strip()]
