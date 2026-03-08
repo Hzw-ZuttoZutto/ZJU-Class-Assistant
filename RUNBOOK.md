@@ -51,6 +51,9 @@ OPENAI_API_KEY=你的OpenAIKey
 # 2) AIHubMix key（OpenAI 兼容网关）
 # AIHUBMIX_API_KEY=你的AIHubMixKey
 # OPENAI_BASE_URL=https://aihubmix.com/v1
+# 可选：钉钉机器人告警
+# DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=...
+# DINGTALK_SECRET=SEC...
 EOF
 ```
 
@@ -138,6 +141,8 @@ python -m src.main watch \
   --record-dir ./records \
   # default balanced preset: gpt-4.1-mini + 10s chunk
   --rt-insight-enabled \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
   --rt-stt-model whisper-large-v3 \
   --rt-model gpt-4.1-mini \
   --rt-api-base-url https://aihubmix.com/v1 \
@@ -191,6 +196,8 @@ python -m src.main watch \
 - 实时中文镜像日志：`realtime_insights.log`
 - 实时音频切片目录：`_rt_chunks/`
 - 实时流程：`10s音频 -> STT转写 -> 文本上下文分析`
+- 可选钉钉告警：通过 `--rt-dingtalk-enabled` 开启，仅转发 `important=true` 事件。
+- 钉钉凭据读取：`.account` 中 `dingtalk_webhook` / `dingtalk_secret`，或环境变量 `DINGTALK_WEBHOOK` / `DINGTALK_SECRET`。
 
 ### 4.3 分析仿真器（simulate）
 用途：对实时分析链路做可控离线仿真，覆盖 5 种模式。
@@ -270,6 +277,8 @@ python -m src.main mic-listen \
   --port 18765 \
   --mic-upload-token YOUR_TOKEN \
   # default balanced preset: gpt-4.1-mini + 10s chunk
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
   --rt-chunk-seconds 10 \
   --rt-stt-model whisper-large-v3 \
   --rt-model gpt-4.1-mini \
@@ -313,6 +322,7 @@ python -m src.main mic-publish \
 - `realtime_transcripts.jsonl`
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
+- 若开启钉钉告警，默认 `30s` 冷却窗口内只接受第一条紧急提醒。
 
 ## 5. 指标说明（`/api/metrics`）
 

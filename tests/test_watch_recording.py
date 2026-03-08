@@ -46,6 +46,8 @@ def _watch_args() -> argparse.Namespace:
         rt_analysis_retry_count=4,
         rt_analysis_retry_interval_sec=0.2,
         rt_alert_threshold=90,
+        rt_dingtalk_enabled=False,
+        rt_dingtalk_cooldown_sec=30.0,
         rt_max_concurrency=5,
         rt_context_min_ready=15,
         rt_context_recent_required=4,

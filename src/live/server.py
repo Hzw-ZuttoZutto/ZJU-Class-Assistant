@@ -15,11 +15,16 @@ from pathlib import Path
 import requests
 
 from src.auth.cas_client import ZJUAuthClient
-from src.common.account import resolve_credentials
+from src.common.account import resolve_credentials, resolve_dingtalk_bot_settings
 from src.common.constants import HLS_JS_CANDIDATE_URLS
 from src.common.course_meta import fetch_course_meta
 from src.common.http import create_session
-from src.live.insight import RealtimeInsightConfig, RealtimeInsightService
+from src.live.insight import (
+    DingTalkNotifier,
+    DingTalkNotifierMetadata,
+    RealtimeInsightConfig,
+    RealtimeInsightService,
+)
 from src.live.joiner import JoinRoomClient
 from src.live.poller import StreamPoller
 from src.live.proxy import ProxyEngine
@@ -261,6 +266,22 @@ def run_watch(args: argparse.Namespace) -> int:
             keywords_file = Path(args.rt_keywords_file).expanduser().resolve()
             chunk_seconds = max(2, int(args.rt_chunk_seconds))
             context_target_chunks = max(1, int(args.rt_context_window_seconds) // max(1, chunk_seconds))
+            notifier = None
+            if args.rt_dingtalk_enabled:
+                webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
+                if dingtalk_error:
+                    print(f"Watch failed: {dingtalk_error}", file=sys.stderr)
+                    return 1
+                notifier = DingTalkNotifier(
+                    webhook=webhook,
+                    secret=secret,
+                    cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+                    metadata=DingTalkNotifierMetadata(
+                        course_title=course_meta.title,
+                        teacher_name=course_meta.primary_teacher,
+                    ),
+                    log_fn=print,
+                )
             insight_config = RealtimeInsightConfig(
                 enabled=True,
                 chunk_seconds=chunk_seconds,
@@ -278,6 +299,10 @@ def run_watch(args: argparse.Namespace) -> int:
                 analysis_retry_count=max(0, int(args.rt_analysis_retry_count)),
                 analysis_retry_interval_sec=max(0.0, float(args.rt_analysis_retry_interval_sec)),
                 alert_threshold=max(0, min(100, int(args.rt_alert_threshold))),
+                dingtalk_enabled=bool(args.rt_dingtalk_enabled),
+                dingtalk_cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+                dingtalk_send_timeout_sec=5.0,
+                dingtalk_send_retry_count=5,
                 max_concurrency=max(1, int(args.rt_max_concurrency)),
                 context_min_ready=max(0, int(args.rt_context_min_ready)),
                 context_recent_required=max(0, int(args.rt_context_recent_required)),
@@ -294,6 +319,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 poller=poller,
                 session_dir=session_dir,
                 config=insight_config,
+                notifier=notifier,
             )
             print(
                 "Realtime insight enabled: "
@@ -301,6 +327,11 @@ def run_watch(args: argparse.Namespace) -> int:
                 f"chunk={insight_config.chunk_seconds}s, context_chunks={insight_config.context_target_chunks}, "
                 f"workers={insight_config.max_concurrency}, keywords={keywords_file}"
             )
+            if insight_config.dingtalk_enabled:
+                print(
+                    "Realtime DingTalk alert enabled: "
+                    f"cooldown={insight_config.dingtalk_cooldown_sec:.1f}s"
+                )
             insight_service.start()
 
         proxy_engine = ProxyEngine(

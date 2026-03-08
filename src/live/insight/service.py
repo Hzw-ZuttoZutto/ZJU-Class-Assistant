@@ -10,6 +10,7 @@ from typing import Callable
 
 from src.common.account import resolve_openai_client_settings
 from src.live.insight.audio_chunker import RealtimeAudioChunker
+from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import (
     InsightEvent,
     KeywordConfig,
@@ -31,6 +32,7 @@ class RealtimeInsightService:
         log_fn: Callable[[str], None] | None = None,
         chunker: RealtimeAudioChunker | None = None,
         client: OpenAIInsightClient | None = None,
+        notifier: DingTalkNotifier | None = None,
     ) -> None:
         self.poller = poller
         self.session_dir = session_dir
@@ -50,6 +52,7 @@ class RealtimeInsightService:
             chunk_seconds=max(2, int(config.chunk_seconds)),
         )
         self._client = client
+        self._notifier = notifier
 
         self._active_url = ""
         self._ready_age_sec = 1.2
@@ -80,6 +83,10 @@ class RealtimeInsightService:
         if thread is not None:
             thread.join()
         self._thread = None
+        if self._stage_processor is not None:
+            self._stage_processor.close()
+        elif self._notifier is not None:
+            self._notifier.stop()
 
     def _run(self) -> None:
         if not self._prepare_runtime():
@@ -143,6 +150,7 @@ class RealtimeInsightService:
             config=self.config,
             keywords=self._keywords,
             client=self._client,
+            notifier=self._notifier,
             log_fn=self._log,
             stop_event=self._stop_event,
         )
@@ -478,6 +486,13 @@ class RealtimeInsightService:
             f"{level} [rt-insight] seq={event.chunk_seq} chunk={event.chunk_file} "
             f"urgency={event.urgency_percent}% status={event.status} summary={event.summary}"
         )
+        if self._notifier is not None and bool(getattr(self.config, "dingtalk_enabled", False)):
+            try:
+                self._notifier.notify_event(event)
+            except Exception as exc:
+                self._log(
+                    f"[rt-dingtalk] enqueue failed seq={event.chunk_seq} chunk={event.chunk_file} error={exc}"
+                )
 
     def _get_or_assign_chunk_seq(self, chunk_name: str) -> int:
         with self._state_lock:

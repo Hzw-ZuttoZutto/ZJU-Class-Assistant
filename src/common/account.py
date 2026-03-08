@@ -89,6 +89,51 @@ def resolve_openai_client_settings(
     return key, base_url, ""
 
 
+def resolve_dingtalk_bot_settings(
+    *,
+    webhook_env_name: str = "DINGTALK_WEBHOOK",
+    secret_env_name: str = "DINGTALK_SECRET",
+) -> tuple[str, str, str]:
+    resolved_webhook_env = (webhook_env_name or "DINGTALK_WEBHOOK").strip() or "DINGTALK_WEBHOOK"
+    resolved_secret_env = (secret_env_name or "DINGTALK_SECRET").strip() or "DINGTALK_SECRET"
+
+    account_file = default_account_file()
+    account_entries: dict[str, str] = {}
+    account_read_error = ""
+    if account_file.exists():
+        try:
+            account_entries = _parse_account_entries(account_file)
+        except OSError as exc:
+            account_read_error = f"failed to read account file {account_file}: {exc}"
+
+    webhook = _resolve_named_setting(
+        account_entries=account_entries,
+        account_candidates=[resolved_webhook_env.lower(), "dingtalk_webhook"],
+        env_candidates=[resolved_webhook_env],
+    )
+    secret = _resolve_named_setting(
+        account_entries=account_entries,
+        account_candidates=[resolved_secret_env.lower(), "dingtalk_secret"],
+        env_candidates=[resolved_secret_env],
+    )
+
+    if webhook and secret:
+        return webhook, secret, ""
+    if account_read_error:
+        return "", "", account_read_error
+
+    missing_parts: list[str] = []
+    if not webhook:
+        missing_parts.append(
+            f"webhook: set {resolved_webhook_env} or dingtalk_webhook in {account_file}"
+        )
+    if not secret:
+        missing_parts.append(
+            f"secret: set {resolved_secret_env} or dingtalk_secret in {account_file}"
+        )
+    return "", "", "missing DingTalk bot settings: " + "; ".join(missing_parts)
+
+
 def _read_openai_key_from_entries(entries: dict[str, str], env_name: str) -> str:
     candidates = [env_name.strip().lower(), "openai_api_key", "openai_key"]
     seen: set[str] = set()
@@ -156,6 +201,34 @@ def _resolve_openai_base_url(
         if not key_name:
             continue
         value = os.environ.get(key_name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_named_setting(
+    *,
+    account_entries: dict[str, str],
+    account_candidates: list[str],
+    env_candidates: list[str],
+) -> str:
+    seen_account: set[str] = set()
+    for key_name in account_candidates:
+        candidate = key_name.strip().lower()
+        if not candidate or candidate in seen_account:
+            continue
+        seen_account.add(candidate)
+        value = (account_entries.get(candidate) or "").strip()
+        if value:
+            return value
+
+    seen_env: set[str] = set()
+    for key_name in env_candidates:
+        candidate = key_name.strip()
+        if not candidate or candidate in seen_env:
+            continue
+        seen_env.add(candidate)
+        value = os.environ.get(candidate, "").strip()
         if value:
             return value
     return ""

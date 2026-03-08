@@ -83,8 +83,31 @@ class _FakeClient:
         )
 
 
+class _FakeNotifier:
+    def __init__(self, *, should_raise: bool = False) -> None:
+        self.should_raise = should_raise
+        self.events = []
+        self.stopped = False
+
+    def notify_event(self, event) -> bool:
+        if self.should_raise:
+            raise RuntimeError("notify failed")
+        if not bool(getattr(event, "important", False)):
+            return False
+        self.events.append(event)
+        return True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 class RealtimeInsightServiceTests(unittest.TestCase):
-    def _build_service(self, session_dir: Path, client: _FakeClient) -> RealtimeInsightService:
+    def _build_service(
+        self,
+        session_dir: Path,
+        client: _FakeClient,
+        notifier: _FakeNotifier | None = None,
+    ) -> RealtimeInsightService:
         config = RealtimeInsightConfig(
             enabled=True,
             chunk_seconds=10,
@@ -107,6 +130,7 @@ class RealtimeInsightServiceTests(unittest.TestCase):
             context_wait_timeout_sec_2=0.05,
             use_dual_context_wait=True,
             max_concurrency=5,
+            dingtalk_enabled=notifier is not None,
         )
         return RealtimeInsightService(
             poller=_FakePoller("https://x/live.m3u8"),
@@ -114,6 +138,7 @@ class RealtimeInsightServiceTests(unittest.TestCase):
             config=config,
             chunker=_FakeChunker(),
             client=client,
+            notifier=notifier,
             log_fn=lambda _: None,
         )
 
@@ -156,6 +181,48 @@ class RealtimeInsightServiceTests(unittest.TestCase):
                 text_log,
                 "平常\n具体内容：提到了微积分重点\n具体上下文：老师在讲导数与极限关系\n\n",
             )
+
+    def test_process_chunk_important_event_enqueues_dingtalk_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            chunk = session_dir / "chunk_20260101_000000.mp3"
+            chunk.write_bytes(b"audio")
+            notifier = _FakeNotifier()
+
+            service = self._build_service(session_dir, _FakeClient(important=True), notifier=notifier)
+            self.assertTrue(service._prepare_runtime())
+            service._process_chunk_task(1, chunk)
+
+            self.assertEqual(len(notifier.events), 1)
+            self.assertTrue(bool(notifier.events[0].important))
+
+    def test_process_chunk_non_important_event_skips_dingtalk_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            chunk = session_dir / "chunk_20260101_000000.mp3"
+            chunk.write_bytes(b"audio")
+            notifier = _FakeNotifier()
+
+            service = self._build_service(session_dir, _FakeClient(important=False), notifier=notifier)
+            self.assertTrue(service._prepare_runtime())
+            service._process_chunk_task(1, chunk)
+
+            self.assertEqual(notifier.events, [])
+
+    def test_dingtalk_enqueue_failure_does_not_break_local_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            chunk = session_dir / "chunk_20260101_000000.mp3"
+            chunk.write_bytes(b"audio")
+            notifier = _FakeNotifier(should_raise=True)
+
+            service = self._build_service(session_dir, _FakeClient(important=True), notifier=notifier)
+            self.assertTrue(service._prepare_runtime())
+            service._process_chunk_task(1, chunk)
+
+            insights = (session_dir / "realtime_insights.jsonl").read_text(encoding="utf-8").strip()
+            payload = json.loads(insights)
+            self.assertEqual(payload["status"], "ok")
 
     def test_transcript_timeout_drop(self) -> None:
         with tempfile.TemporaryDirectory() as td:

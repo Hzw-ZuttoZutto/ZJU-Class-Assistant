@@ -79,6 +79,10 @@ class RealtimeInsightConfig:
     mic_chunk_max_bytes: int = 10 * 1024 * 1024
     mic_chunk_dir: Path = field(default_factory=lambda: Path("_rt_chunks_mic"))
     profile_enabled: bool = False
+    dingtalk_enabled: bool = False
+    dingtalk_cooldown_sec: float = 30.0
+    dingtalk_send_timeout_sec: float = 5.0
+    dingtalk_send_retry_count: int = 5
 
 
 @dataclass

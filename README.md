@@ -33,6 +33,9 @@ OPENAI_API_KEY=你的OpenAIKey
 # 2) AIHubMix key（OpenAI 兼容网关）
 # AIHUBMIX_API_KEY=你的AIHubMixKey
 # OPENAI_BASE_URL=https://aihubmix.com/v1
+# 可选：钉钉机器人告警
+# DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=...
+# DINGTALK_SECRET=SEC...
 EOF
 
 # 语法检查 + 测试
@@ -72,6 +75,8 @@ python -m src.main watch \
   --record-dir ./records \
   # default balanced preset: gpt-4.1-mini + 10s chunk
   --rt-insight-enabled \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
   --rt-stt-model whisper-large-v3 \
   --rt-model gpt-4.1-mini \
   --rt-chunk-seconds 10 \
@@ -130,6 +135,9 @@ python -m src.main simulate \
   - 环境变量 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
 - Base URL 可通过 `.account` 或环境变量中的 `OPENAI_BASE_URL` / `AIHUBMIX_BASE_URL` 指定。
 - 若只配置 `AIHUBMIX_API_KEY` 且未显式给 Base URL，默认使用 `https://aihubmix.com/v1`。
+- 钉钉机器人告警可从 `.account` 或环境变量读取：
+  - `.account`: `dingtalk_webhook=...` 与 `dingtalk_secret=...`
+  - 环境变量：`DINGTALK_WEBHOOK` 与 `DINGTALK_SECRET`
 
 录制产物：
 
@@ -147,6 +155,8 @@ python -m src.main simulate \
 - 关键词默认文件：`config/realtime_keywords.json`。
 - 实时流程为两阶段：`10s音频 -> STT转写 -> 文本上下文分析`。
 - 紧急度为二分类：重要=95%，非重要或失败降级=10%。
+- 可选钉钉告警：仅 `watch` / `mic-listen` 支持，通过 `--rt-dingtalk-enabled` 开启。
+- 钉钉告警冷却时间默认 `30s`，可通过 `--rt-dingtalk-cooldown-sec` 调整。
 
 仿真器说明：
 
@@ -185,6 +195,8 @@ python -m src.main mic-listen \
   --host 127.0.0.1 \
   --port 18765 \
   --mic-upload-token YOUR_TOKEN \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
   # default balanced preset: gpt-4.1-mini + 10s chunk
   --rt-chunk-seconds 10 \
   --rt-stt-model whisper-large-v3 \
@@ -230,3 +242,4 @@ python -m src.main mic-publish \
 - `realtime_transcripts.jsonl`
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
+- 若开启钉钉告警，只会转发 `important=true` 的事件，且 `30s` 冷却窗口内的新紧急事件会直接丢弃。

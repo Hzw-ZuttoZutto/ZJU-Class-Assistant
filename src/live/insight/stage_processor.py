@@ -14,6 +14,7 @@ from src.live.insight.models import (
     TranscriptChunk,
     format_local_ts,
 )
+from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
 
 
@@ -29,6 +30,7 @@ class InsightStageProcessor:
         config: RealtimeInsightConfig,
         keywords: KeywordConfig,
         client: OpenAIInsightClient | None,
+        notifier: DingTalkNotifier | None = None,
         log_fn: Callable[[str], None] | None = None,
         stop_event: threading.Event | None = None,
     ) -> None:
@@ -36,6 +38,7 @@ class InsightStageProcessor:
         self.config = config
         self.keywords = keywords
         self.client = client
+        self.notifier = notifier
         self._log_fn = log_fn or print
         self._stop_event = stop_event
 
@@ -739,6 +742,11 @@ class InsightStageProcessor:
         )
         if profile is not None:
             profile["insight_console_log_ts_ms"] = _now_epoch_ms()
+        self._notify_dingtalk(event)
+
+    def close(self) -> None:
+        if self.notifier is not None:
+            self.notifier.stop()
 
     def mark_and_check_recovery(self, chunk_seq: int) -> bool:
         with self._state_lock:
@@ -749,6 +757,16 @@ class InsightStageProcessor:
 
     def _is_stopping(self) -> bool:
         return bool(self._stop_event is not None and self._stop_event.is_set())
+
+    def _notify_dingtalk(self, event: InsightEvent) -> None:
+        if self.notifier is None or not bool(getattr(self.config, "dingtalk_enabled", False)):
+            return
+        try:
+            self.notifier.notify_event(event)
+        except Exception as exc:
+            self._log(
+                f"[rt-dingtalk] enqueue failed seq={event.chunk_seq} chunk={event.chunk_file} error={exc}"
+            )
 
     def _log(self, msg: str) -> None:
         self._log_fn(msg)

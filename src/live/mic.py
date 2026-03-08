@@ -22,7 +22,8 @@ from typing import Any, Callable
 
 import requests
 
-from src.common.account import resolve_openai_client_settings
+from src.common.account import resolve_dingtalk_bot_settings, resolve_openai_client_settings
+from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format_local_ts
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
@@ -722,11 +723,28 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         mic_chunk_max_bytes=max(1, int(args.mic_chunk_max_bytes)),
         mic_chunk_dir=chunk_dir,
         profile_enabled=bool(getattr(args, "rt_profile_enabled", False)),
+        dingtalk_enabled=bool(getattr(args, "rt_dingtalk_enabled", False)),
+        dingtalk_cooldown_sec=max(0.0, float(getattr(args, "rt_dingtalk_cooldown_sec", 30.0))),
+        dingtalk_send_timeout_sec=5.0,
+        dingtalk_send_retry_count=5,
     )
 
     client = _build_openai_client(config)
     if client is None:
         return 1
+
+    notifier = None
+    if config.dingtalk_enabled:
+        webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
+        if dingtalk_error:
+            print(f"[mic-listen] {dingtalk_error}")
+            return 1
+        notifier = DingTalkNotifier(
+            webhook=webhook,
+            secret=secret,
+            cooldown_sec=config.dingtalk_cooldown_sec,
+            log_fn=print,
+        )
 
     keywords = _load_keywords(config.keywords_file, log_fn=print)
     stage_processor = InsightStageProcessor(
@@ -734,6 +752,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         config=config,
         keywords=keywords,
         client=client,
+        notifier=notifier,
         log_fn=print,
     )
 
@@ -757,6 +776,8 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         print(f"[mic-listen] chunk_dir={chunk_dir}")
         if config.profile_enabled:
             print(f"[mic-listen] profile_log={session_dir / 'realtime_profile.jsonl'}")
+        if config.dingtalk_enabled:
+            print(f"[mic-listen] DingTalk alert enabled cooldown={config.dingtalk_cooldown_sec:.1f}s")
         print("[mic-listen] Press Ctrl+C to stop.")
         try:
             server.serve_forever(poll_interval=0.5)
@@ -765,6 +786,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
     finally:
         server.server_close()
         processor.stop()
+        stage_processor.close()
     return 0
 
 

@@ -211,6 +211,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Urgency threshold for [ALERT] console output",
     )
     watch.add_argument(
+        "--rt-dingtalk-enabled",
+        action="store_true",
+        help="Enable DingTalk bot alerts for important realtime insights",
+    )
+    watch.add_argument(
+        "--rt-dingtalk-cooldown-sec",
+        type=float,
+        default=30.0,
+        help="Cooldown seconds after an accepted DingTalk alert",
+    )
+    watch.add_argument(
         "--rt-max-concurrency",
         type=int,
         default=5,
@@ -353,6 +364,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=90,
         help="Urgency threshold for [ALERT] console output",
+    )
+    mic_listen.add_argument(
+        "--rt-dingtalk-enabled",
+        action="store_true",
+        help="Enable DingTalk bot alerts for important realtime insights",
+    )
+    mic_listen.add_argument(
+        "--rt-dingtalk-cooldown-sec",
+        type=float,
+        default=30.0,
+        help="Cooldown seconds after an accepted DingTalk alert",
     )
     mic_listen.add_argument(
         "--rt-context-min-ready",

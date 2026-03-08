@@ -8,6 +8,7 @@ from unittest import mock
 from src.common.account import (
     parse_account_file,
     resolve_credentials,
+    resolve_dingtalk_bot_settings,
     resolve_openai_api_key,
     resolve_openai_client_settings,
 )
@@ -108,6 +109,42 @@ class AccountCredentialTests(unittest.TestCase):
                 key, base_url, err = resolve_openai_client_settings()
         self.assertEqual(key, "ahm_key")
         self.assertEqual(base_url, "https://example.gateway/v1")
+        self.assertEqual(err, "")
+
+    def test_resolve_dingtalk_bot_settings_from_account_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text(
+                "DINGTALK_WEBHOOK=https://example.test/hook\nDINGTALK_SECRET=sec-123\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict(
+                    "os.environ",
+                    {"DINGTALK_WEBHOOK": "https://env.test/hook", "DINGTALK_SECRET": "env-sec"},
+                    clear=True,
+                ),
+            ):
+                webhook, secret, err = resolve_dingtalk_bot_settings()
+        self.assertEqual(webhook, "https://example.test/hook")
+        self.assertEqual(secret, "sec-123")
+        self.assertEqual(err, "")
+
+    def test_resolve_dingtalk_bot_settings_fallback_to_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict(
+                    "os.environ",
+                    {"DINGTALK_WEBHOOK": "https://env.test/hook", "DINGTALK_SECRET": "env-sec"},
+                    clear=True,
+                ),
+            ):
+                webhook, secret, err = resolve_dingtalk_bot_settings()
+        self.assertEqual(webhook, "https://env.test/hook")
+        self.assertEqual(secret, "env-sec")
         self.assertEqual(err, "")
 
 

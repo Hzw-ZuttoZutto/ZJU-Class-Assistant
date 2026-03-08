@@ -4,6 +4,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.cli.parser import build_parser
@@ -12,6 +13,49 @@ from src.simulator.service import run_simulate
 
 
 class SimulatorServiceMode2ValidationTests(unittest.TestCase):
+    def test_simulate_processor_is_built_without_dingtalk_notifier(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            sim_root = base / "sim"
+            run_dir = base / "runs"
+            sim_root.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            args = parser.parse_args(
+                [
+                    "simulate",
+                    "--mode",
+                    "6",
+                    "--scenario-file",
+                    str(base / "mode6.yaml"),
+                    "--sim-root",
+                    str(sim_root),
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            fake_processor = object()
+            with (
+                patch(
+                    "src.simulator.service.load_scenario",
+                    return_value=SimpleNamespace(name="mode6_no_notify", seed=None),
+                ),
+                patch("src.simulator.service.InsightStageProcessor", return_value=fake_processor) as processor_cls,
+                patch(
+                    "src.simulator.service.run_mode",
+                    return_value=ModeRunResult(
+                        mode=6,
+                        output_dir=run_dir,
+                        summary={"case_count": 0, "fail_count": 0},
+                    ),
+                ),
+            ):
+                code = run_simulate(args)
+        self.assertEqual(code, 0)
+        _, kwargs = processor_cls.call_args
+        self.assertIsNone(kwargs.get("notifier"))
+
     def test_mode2_strict_validation_failure_returns_nonzero(self) -> None:
         parser = build_parser()
         with tempfile.TemporaryDirectory() as td:
