@@ -230,11 +230,7 @@ python -m src.main mic-list-devices
 4) 本机启动麦克风发布：
 
 ```bash
-python -m src.main mic-publish \
-  --target-url http://127.0.0.1:18765 \
-  --mic-upload-token YOUR_TOKEN \
-  --device "你的麦克风设备名" \
-  --chunk-seconds 10
+python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token YOUR_TOKEN --device "你的麦克风设备" --chunk-seconds 10
 ```
 
 输出文件与 `watch --rt-insight-enabled` 相同，位于 `mic-listen` 的 `session_dir`：
