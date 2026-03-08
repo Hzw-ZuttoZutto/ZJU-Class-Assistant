@@ -1,53 +1,86 @@
-# ZJU Classroom Live Tool
+# Fuck-ZJU 使用门户
 
-直播代理与课程扫描工具，统一入口为：
+统一入口：
 
 ```bash
 python -m src.main <subcommand> ...
 ```
 
-## 目录
+## 1. 功能总览
 
-- `src/main.py`：CLI 总入口
-- `src/scan/`：课程扫描逻辑
-- `src/live/`：直播轮询、代理、Web 服务
-- `src/simulator/`：实时分析仿真器（6模式）
-- `src/live_video.py`：教师流选择策略（优先音轨可用）
-- `src/live_ppt.py`：PPT 流选择策略
-- `tests/`：单元与集成测试
-- `RUNBOOK.md`：运行与排障手册
+面向日常使用，只保留 4 类核心功能：
 
-## 快速开始
+- `scan`：按教师名 + 课程名扫描课程 ID。
+- `watch`：直播代理播放（教师流/PPT 流）+ 录制 + 实时关键信息提取。
+- `mic-listen` + `mic-publish`：独立麦克风采集链路（不依赖 watch）。
+- `mic-list-devices`：列出本机可用麦克风设备。
+
+## 2. 快速开始
+
+1. 安装依赖：
 
 ```bash
-# 安装依赖（realtime insight 需要 openai sdk）
 pip install -r requirements.txt
+```
 
-# 凭据文件（推荐，避免在命令行暴露密码）
-cat > .account <<'EOF'
-USERNAME=你的统一认证账号
-PASSWORD=你的统一认证密码
-# 二选一即可：
-# 1) OpenAI 官方 key
-OPENAI_API_KEY=你的OpenAIKey
-# 2) AIHubMix key（OpenAI 兼容网关）
-# AIHUBMIX_API_KEY=你的AIHubMixKey
-# OPENAI_BASE_URL=https://aihubmix.com/v1
-# stream ASR 必填
-# DASHSCOPE_API_KEY=你的DashScopeKey
-# 可选：钉钉机器人告警
-# DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=...
-# DINGTALK_SECRET=SEC...
-EOF
+2. 复制账号模板并填写：
 
-# 语法检查 + 测试
-python -m py_compile $(find src tests -name '*.py')
-python -m unittest discover -s tests -v
+```bash
+cp account .account
+```
 
-# 扫描课程
-python -m src.main scan --teacher '王强' --title '编译原理' --center 83650 --radius 100 --workers 64 --retries 1 --verbose
+3. 直接运行（示例：扫描课程）：
 
-# 扫描课程（仅保留“直播中”）
+```bash
+python -m src.main scan --teacher '王强' --title '编译原理'
+```
+
+## 3. `.account` 填写说明
+
+- 读取文件：仓库根目录 `.account`。
+- 键名大小写不敏感（内部统一按小写解析）。
+- 建议全部使用模板中的大写键名，便于团队统一。
+
+### 3.1 字段说明
+
+| 键名 | 必填 | 用于什么功能 | 含义 |
+|---|---|---|---|
+| `USERNAME` | 是（`scan/watch`） | `scan`、`watch` | 浙大统一认证账号 |
+| `PASSWORD` | 是（`scan/watch`） | `scan`、`watch` | 浙大统一认证密码 |
+| `OPENAI_API_KEY` | 与 `AIHUBMIX_API_KEY` 二选一 | `watch` / `mic-listen` 实时分析 | OpenAI 兼容文本/语音能力 Key |
+| `AIHUBMIX_API_KEY` | 与 `OPENAI_API_KEY` 二选一 | `watch` / `mic-listen` 实时分析 | AIHubMix 网关 Key |
+| `OPENAI_BASE_URL` | 否 | `watch` / `mic-listen` 实时分析 | OpenAI 兼容网关地址 |
+| `DASHSCOPE_API_KEY` | stream 模式必填 | `watch` / `mic-listen` 的 `--rt-pipeline-mode stream` | DashScope 实时 ASR Key |
+| `DINGTALK_WEBHOOK` | 开启告警时必填 | `watch` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人 Webhook |
+| `DINGTALK_SECRET` | 开启告警时必填 | `watch` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人签名 Secret |
+
+### 3.2 优先级规则
+
+- 登录凭据：CLI `--username/--password` > `.account`。
+- OpenAI/AIHubMix Key：`.account` > 环境变量。
+- Base URL：`.account` > 环境变量。
+- DashScope Key：`.account` > 环境变量。
+- DingTalk 机器人：`.account` > 环境变量。
+- 仅配置 `AIHUBMIX_API_KEY` 且未设置 Base URL 时，默认使用 `https://aihubmix.com/v1`。
+
+## 4. 实践默认参数配置（可直接复制）
+
+### 4.1 课程扫描（默认）
+
+```bash
+python -m src.main scan \
+  --teacher '王强' \
+  --title '编译原理' \
+  --center 83650 \
+  --radius 100 \
+  --workers 64 \
+  --retries 1 \
+  --verbose
+```
+
+仅保留“直播中”课程：
+
+```bash
 python -m src.main scan \
   --teacher '王强' \
   --title '编译原理' \
@@ -56,189 +89,28 @@ python -m src.main scan \
   --require-live \
   --live-check-timeout 30 \
   --live-check-interval 2 \
-  --worker 64
+  --workers 64
+```
 
-# 启动直播代理
-python -m src.main watch --course-id 83650 --sub-id <sub_id> --poll-interval 3 --port 8765 --no-browser
+### 4.2 `watch` + 录制 + chunk 实时分析（实践默认）
 
-# 启动直播代理 + 录制（默认每10分钟切片；0=整场单文件）
+```bash
 python -m src.main watch \
   --course-id 83650 \
-  --sub-id <sub_id> \
+  --sub-id 1895397 \
+  --poll-interval 3 \
+  --port 8765 \
   --record-dir ./records \
   --record-segment-minutes 10 \
   --record-startup-av-timeout 15 \
-  --record-recovery-window-sec 10
-
-# 启动直播代理 + 录制 + 实时关键信息提取（10s 音频增量）
-python -m src.main watch \
-  --course-id 83650 \
-  --sub-id <sub_id> \
-  --record-dir ./records \
-  # default balanced preset: gpt-4.1-mini + 10s chunk
+  --record-recovery-window-sec 10 \
   --rt-insight-enabled \
-  --rt-dingtalk-enabled \
-  --rt-dingtalk-cooldown-sec 30 \
+  --rt-pipeline-mode chunk \
   --rt-stt-model whisper-large-v3 \
   --rt-model gpt-4.1-mini \
+  --rt-api-base-url https://aihubmix.com/v1 \
   --rt-chunk-seconds 10 \
   --rt-context-window-seconds 180 \
-  --rt-max-concurrency 5 \
-  --rt-stt-request-timeout-sec 8 \
-  --rt-stt-stage-timeout-sec 32 \
-  --rt-stt-retry-count 4 \
-  --rt-stt-retry-interval-sec 0.2 \
-  --rt-analysis-request-timeout-sec 15 \
-  --rt-analysis-stage-timeout-sec 60 \
-  --rt-analysis-retry-count 4 \
-  --rt-analysis-retry-interval-sec 0.2 \
-  --rt-context-min-ready 15 \
-  --rt-context-recent-required 4 \
-  --rt-context-wait-timeout-sec-1 1 \
-  --rt-context-wait-timeout-sec-2 5 \
-  --rt-api-base-url https://aihubmix.com/v1 \
-  --rt-keywords-file config/realtime_keywords.json
-
-# 启动仿真器（mode1：全流程）
-python -m src.main simulate \
-  --mode 1 \
-  --scenario-file tests/simulator/scenarios/mode1/example.yaml \
-  --mp3-dir tests/simulator/mp3_inputs \
-  --run-dir tests/simulator/runs \
-  --chunk-seconds 10
-
-# 启动仿真器（mode2：翻译可控，启动前全量预计算）
-python -m src.main simulate \
-  --mode 2 \
-  --scenario-file tests/simulator/scenarios/mode2/example.yaml \
-  --rt-api-base-url https://aihubmix.com/v1 \
-  --rt-stt-model whisper-large-v3 \
-  --precompute-workers 4
-
-# 启动仿真器（mode4：翻译 API 响应时间基准）
-python -m src.main simulate \
-  --mode 4 \
-  --scenario-file tests/simulator/scenarios/mode4/example.yaml \
-  --rt-api-base-url https://aihubmix.com/v1 \
-  --rt-stt-model whisper-large-v3
-
-# 启动仿真器（mode6：离线逻辑正确性验证，不依赖 mp3 / OpenAI）
-python -m src.main simulate \
-  --mode 6 \
-  --scenario-file tests/simulator/scenarios/mode6/example.yaml
-```
-
-凭据规则：
-
-- 默认从工作区根目录 `.account` 读取 `USERNAME`、`PASSWORD` 和 AI 模型 key。
-- 仍可通过 `--username/--password` 显式传入；CLI 传参优先级更高。
-- AI key 读取优先级：
-  - `.account` 中 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
-  - 环境变量 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
-- stream ASR key 读取优先级：
-  - `.account` 中 `DASHSCOPE_API_KEY` / `dashscope_api_key`
-  - 环境变量 `DASHSCOPE_API_KEY`
-- Base URL 可通过 `.account` 或环境变量中的 `OPENAI_BASE_URL` / `AIHUBMIX_BASE_URL` 指定。
-- 若只配置 `AIHUBMIX_API_KEY` 且未显式给 Base URL，默认使用 `https://aihubmix.com/v1`。
-- 钉钉机器人告警可从 `.account` 或环境变量读取：
-  - `.account`: `dingtalk_webhook=...` 与 `dingtalk_secret=...`
-  - 环境变量：`DINGTALK_WEBHOOK` 与 `DINGTALK_SECRET`
-
-录制产物：
-
-- 每段 `mp4`：`课程名_老师名_开始时间_结束时间.mp4`
-- 每段 `mp3`：`课程名_老师名_开始时间_结束时间.mp3`
-- 每段缺失日志：`课程名_老师名_开始时间_结束时间.missing.json`
-- 会话汇总：`recording_session_report.json`
-- 实时转写日志：`realtime_transcripts.jsonl`
-- 实时 ASR 事件日志（stream 模式）：`realtime_asr_events.jsonl`
-- 实时结构化日志：`realtime_insights.jsonl`
-- 实时中文镜像日志：`realtime_insights.log`
-- 分析 Prompt 调试日志：`analysis_prompt_trace.jsonl`
-
-实时提取说明：
-
-- 必须提供 `OPENAI_API_KEY`（推荐写在 `.account`）。
-- 关键词默认文件：`config/realtime_keywords.json`。
-- 关键词配置支持 `version: 2` 分组规则：按 `groups[*].id/label/aliases/phrases/detail_cues` 维护事件类型，新增分组只需改配置，不必改代码。
-- 旧版扁平字段 `important_terms/important_phrases/negative_terms` 仍可兼容读取。
-- 实时流程为两阶段：`10s音频 -> STT转写 -> 文本上下文分析`。
-- 新增 stream 模式（`--rt-pipeline-mode stream`）：`音频流 + 热词 -> 句级ASR(partial/final) -> 句级滑窗分析`。
-- `watch` 仅在 `--rt-insight-enabled` 时做模型必填校验：chunk 必须显式传 `--rt-stt-model`，stream 必须显式传 `--rt-asr-model`。
-- `mic-listen` 启动即做模型必填校验：chunk 必须显式传 `--rt-stt-model`，stream 必须显式传 `--rt-asr-model`。
-- stream 热词文件默认 `config/realtime_hotwords.json`，但会强校验：文件不可读/非 JSON 数组将启动失败；空数组 `[]` 合法。
-- stream 路由规则：仅 `gummy-*` 走翻译实时客户端；`paraformer-*` 与 `fun-asr-*` 走识别实时客户端。
-- `scene=multi + paraformer-realtime-v2` 仅输出识别文本，`translation_text` 为空。
-- stream 模式新增句级日志：`realtime_asr_events.jsonl`（记录 partial/final、sentence_id、start/end_ms）。
-- stream 模式下 `realtime_transcripts.jsonl` 仅写入 final 句，保持兼容字段并追加句级定位字段。
-- 紧急度为二分类：重要=95%，非重要或失败降级=10%。
-- 可选钉钉告警：仅 `watch` / `mic-listen` 支持，通过 `--rt-dingtalk-enabled` 开启。
-- 钉钉告警冷却时间默认 `30s`，可通过 `--rt-dingtalk-cooldown-sec` 调整。
-- stream 模式强制要求钉钉可用（未配置则启动失败）。
-
-watch stream 模式示例：
-
-```bash
-python -m src.main watch \
-  --course-id 83650 \
-  --sub-id <sub_id> \
-  --record-dir ./records \
-  --rt-insight-enabled \
-  --rt-pipeline-mode stream \
-  --rt-dingtalk-enabled \
-  --rt-asr-scene zh \
-  --rt-asr-model paraformer-realtime-v2 \
-  --rt-hotwords-file config/realtime_hotwords.json \
-  --rt-window-sentences 8 \
-  --rt-stream-analysis-workers 32 \
-  --rt-stream-queue-size 100 \
-  --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
-  --rt-model gpt-4.1-mini
-```
-
-仿真器说明：
-
-- 场景文件格式为 YAML，目录按模式组织：`tests/simulator/scenarios/mode1..mode6/`。
-- 模式2/3会在仿真启动前执行全量预计算：缓存命中直接复用，未命中补算并写入 `tests/simulator/cache/{stt,analysis}`。
-- 模式3支持 18 位历史可见性串控制：右侧最低位对应 `seq-1`，左侧最高位对应 `seq-18`。
-- 模式4为 STT 基准测试：每次样本都直接请求 STT API，不用本地 STT 缓存替代。
-- 模式5为分析基准测试：分析阶段不读取 analysis 缓存；分析前统一转写阶段允许命中 STT 缓存，缺失时补算并写回。
-- 模式6为离线逻辑验证：按 `mode6.cases` 脚本驱动 STT/历史到达并做严格断言，输出 `mode6_report.json` 与 `mode6_trace.jsonl`。
-- 仿真运行产物位于 `tests/simulator/runs/<scenario>_modeX_<ts>/`，核心文件：
-  - `realtime_transcripts.jsonl`
-  - `realtime_insights.jsonl`
-  - `realtime_insights.log`
-  - `simulate_report.json`
-  - `precompute_manifest.json`（仅mode2/mode3）
-
-本地浏览器观看（本地执行）：
-
-```bash
-ssh <clusters> -L 8765:127.0.0.1:8765
-```
-
-然后打开：
-
-- `http://127.0.0.1:8765/player?role=teacher`
-- `http://127.0.0.1:8765/player?role=ppt`
-
-独立麦克风上游（`mic-listen + mic-publish`）：
-
-- 用途：不启动直播/录制，仅使用“本机麦克风 -> SSH 中继 -> 集群分析”链路。
-
-1) 集群启动接收与分析服务：
-
-```bash
-python -m src.main mic-listen \
-  --host 127.0.0.1 \
-  --port 18765 \
-  --mic-upload-token YOUR_TOKEN \
-  --rt-dingtalk-enabled \
-  --rt-dingtalk-cooldown-sec 30 \
-  # default balanced preset: gpt-4.1-mini + 10s chunk
-  --rt-chunk-seconds 10 \
-  --rt-stt-model whisper-large-v3 \
-  --rt-model gpt-4.1-mini \
   --rt-keywords-file config/realtime_keywords.json \
   --rt-stt-request-timeout-sec 8 \
   --rt-stt-stage-timeout-sec 32 \
@@ -248,73 +120,295 @@ python -m src.main mic-listen \
   --rt-analysis-stage-timeout-sec 60 \
   --rt-analysis-retry-count 4 \
   --rt-analysis-retry-interval-sec 0.2 \
+  --rt-alert-threshold 90 \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
+  --rt-max-concurrency 5 \
+  --rt-context-min-ready 15 \
+  --rt-context-recent-required 4 \
+  --rt-context-wait-timeout-sec-1 1 \
+  --rt-context-wait-timeout-sec-2 5 \
+  --no-browser
+```
+
+播放器地址：
+
+- `http://127.0.0.1:8765/player?role=teacher`
+- `http://127.0.0.1:8765/player?role=ppt`
+
+### 4.3 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
+
+1. 服务端启动：
+
+```bash
+TOKEN="micstream001"
+SESSION_DIR="mic_session_$(date +%Y%m%d_%H%M%S)"
+
+python -m src.main mic-listen \
+  --host 127.0.0.1 \
+  --port 18765 \
+  --session-dir "$SESSION_DIR" \
+  --mic-upload-token "$TOKEN" \
+  --rt-pipeline-mode stream \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 0 \
+  --rt-asr-scene zh \
+  --rt-asr-model fun-asr-realtime \
+  --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-window-sentences 8 \
+  --rt-stream-analysis-workers 32 \
+  --rt-stream-queue-size 100 \
+  --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
+  --rt-chunk-seconds 10 \
+  --rt-model gpt-4.1-mini \
+  --rt-keywords-file config/realtime_keywords.json \
+  --rt-analysis-request-timeout-sec 15 \
+  --rt-analysis-stage-timeout-sec 60 \
+  --rt-analysis-retry-count 4 \
+  --rt-analysis-retry-interval-sec 0.2 \
   --rt-context-recent-required 4 \
   --rt-context-wait-timeout-sec-1 1 \
   --rt-context-wait-timeout-sec-2 5
 ```
 
-集群 stream 模式（新增）：
+2. 本机转发端口（如果 `mic-listen` 在远端机器）：
 
 ```bash
-python -m src.main mic-listen \
-  --host 127.0.0.1 \
-  --port 18765 \
-  --mic-upload-token YOUR_TOKEN \
-  --rt-pipeline-mode stream \
-  --rt-dingtalk-enabled \
-  --rt-asr-scene zh \
-  --rt-asr-model paraformer-realtime-v2 \
-  --rt-hotwords-file config/realtime_hotwords.json \
-  --rt-window-sentences 8 \
-  --rt-stream-analysis-workers 32 \
-  --rt-stream-queue-size 100 \
-  --rt-model gpt-4.1-mini
+ssh -N -L 18765:127.0.0.1:18765 <your-server>
 ```
 
-2) 本机（Windows）建立 SSH 端口转发：
-
-```bash
-ssh <cluster> -L 18765:127.0.0.1:18765
-```
-
-3) 本机查看麦克风设备：
+3. 本机查看设备并发布：
 
 ```bash
 python -m src.main mic-list-devices
-```
 
-4) 本机启动麦克风发布：
-
-```bash
-python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token YOUR_TOKEN --device "你的麦克风设备" --chunk-seconds 10
-```
-
-本机 stream 模式发布（新增）：
-
-```bash
 python -m src.main mic-publish \
   --target-url http://127.0.0.1:18765 \
-  --mic-upload-token YOUR_TOKEN \
-  --device "你的麦克风设备" \
+  --mic-upload-token "$TOKEN" \
+  --device "你的麦克风设备名" \
   --rt-pipeline-mode stream \
-  --stream-frame-duration-ms 100
+  --stream-frame-duration-ms 120 \
+  --request-timeout-sec 20 \
+  --retry-base-sec 1.0 \
+  --retry-max-sec 12.0
 ```
 
-输出文件与 `watch --rt-insight-enabled` 相同，位于 `mic-listen` 的 `session_dir`：
+## 5. 参数说明（按功能块）
+
+### 5.1 `scan/watch` 通用登录参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--username` | 空 | 统一认证账号；不传则读 `.account` |
+| `--password` | 空 | 统一认证密码；不传则读 `.account` |
+| `--tenant-code` | `112` | 租户代码 |
+| `--authcode` | 空 | 验证码（仅登录要求时填写） |
+| `--timeout` | `20` | HTTP 超时秒数 |
+
+### 5.2 `scan` 参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--teacher` | 必填 | 精确匹配教师名 |
+| `--title` | 必填 | 精确匹配课程标题 |
+| `--center` | `81889` | 扫描中心课程 ID |
+| `--radius` | `200` | 扫描半径（即 `[center-radius, center+radius]`） |
+| `--workers` | `min(64, max(4, cpu*2))` | 并发请求数 |
+| `--retries` | `1` | 单请求失败重试次数 |
+| `--verbose` | 关闭 | 输出每条被扫描课程 |
+| `--require-live` | 关闭 | 仅保留“直播中”结果 |
+| `--live-check-timeout` | `30.0` | 单候选课程直播状态最大等待秒数 |
+| `--live-check-interval` | `2.0` | 直播状态轮询间隔秒数 |
+
+### 5.3 `watch` 基础播放参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--course-id` | 必填 | 课程 ID |
+| `--sub-id` | 必填 | 直播子 ID |
+| `--poll-interval` | `10.0` | 上游流信息轮询间隔（秒） |
+| `--host` | `127.0.0.1` | 本地服务监听地址 |
+| `--port` | `8765` | 本地服务端口 |
+| `--open-base-url` | 空 | 自动打开浏览器时使用的地址（端口映射场景） |
+| `--no-browser` | 关闭 | 关闭自动拉起浏览器 |
+
+### 5.4 `watch` 拉流容错参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--playlist-retries` | `3` | m3u8 拉取失败重试次数 |
+| `--asset-retries` | `3` | 分片/密钥拉取失败重试次数 |
+| `--stale-playlist-grace` | `15.0` | 上游失败时继续使用缓存 playlist 的秒数 |
+| `--hls-max-buffer` | `20` | 浏览器端 HLS 缓冲长度参数 |
+
+### 5.5 `watch` 录制参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--record-dir` | 空 | 录制根目录；不传则在当前目录创建会话目录 |
+| `--record-segment-minutes` | `10` | 切片分钟数；`0` 表示整场一个文件 |
+| `--record-startup-av-timeout` | `15.0` | 启动阶段等待音视频可用的最大秒数 |
+| `--record-recovery-window-sec` | `10.0` | 断流恢复窗口；超过后记入缺失区间 |
+
+### 5.6 `watch` 实时分析通用参数
+
+> 只有开启 `--rt-insight-enabled` 后才生效。
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--rt-insight-enabled` | 关闭 | 开启实时关键信息提取 |
+| `--rt-pipeline-mode` | `chunk` | 分析模式：`chunk` / `stream` |
+| `--rt-model` | `gpt-4.1-mini` | 文本分析模型 |
+| `--rt-keywords-file` | `config/realtime_keywords.json` | 关键词规则文件 |
+| `--rt-api-base-url` | 空 | OpenAI 兼容网关地址 |
+| `--rt-alert-threshold` | `90` | 触发 `[ALERT]` 的阈值 |
+| `--rt-dingtalk-enabled` | 关闭 | 开启钉钉告警推送 |
+| `--rt-dingtalk-cooldown-sec` | `30.0` | 钉钉告警冷却时间（秒） |
+
+### 5.7 `watch` chunk 模式参数（`--rt-pipeline-mode chunk`）
+
+> chunk 模式必须显式传 `--rt-stt-model`。
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--rt-stt-model` | 无 | 语音转写模型（必填） |
+| `--rt-chunk-seconds` | `10` | 音频切片时长（秒） |
+| `--rt-context-window-seconds` | `180` | 历史上下文窗口（秒） |
+| `--rt-max-concurrency` | `5` | 并发处理 worker 数 |
+| `--rt-stt-request-timeout-sec` | `8.0` | STT 单请求超时 |
+| `--rt-stt-stage-timeout-sec` | `32.0` | STT 阶段总超时 |
+| `--rt-stt-retry-count` | `4` | STT 阶段最大尝试次数 |
+| `--rt-stt-retry-interval-sec` | `0.2` | STT 重试间隔 |
+| `--rt-analysis-request-timeout-sec` | `15.0` | 分析单请求超时 |
+| `--rt-analysis-stage-timeout-sec` | `60.0` | 分析阶段总超时 |
+| `--rt-analysis-retry-count` | `4` | 分析阶段最大尝试次数 |
+| `--rt-analysis-retry-interval-sec` | `0.2` | 分析重试间隔 |
+| `--rt-context-min-ready` | `15` | 严格上下文门槛最小可用片段数 |
+| `--rt-context-recent-required` | `4` | 最近必须可用片段数 |
+| `--rt-context-wait-timeout-sec-1` | `1.0` | 最近片段齐备后额外等待时间 |
+| `--rt-context-wait-timeout-sec-2` | `5.0` | 等待最近片段齐备的最大时长 |
+
+### 5.8 `watch` stream 模式参数（`--rt-pipeline-mode stream`）
+
+> stream 模式必须显式传 `--rt-asr-model`，并且必须启用 `--rt-dingtalk-enabled`。
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--rt-asr-scene` | `zh` | 实时 ASR 场景（`zh` / `multi`） |
+| `--rt-asr-model` | 无 | 实时 ASR 模型（必填） |
+| `--rt-hotwords-file` | `config/realtime_hotwords.json` | 热词 JSON 数组文件 |
+| `--rt-window-sentences` | `8` | 句级滑窗大小 |
+| `--rt-stream-analysis-workers` | `32` | 流式分析并发 worker 数 |
+| `--rt-stream-queue-size` | `100` | 流式分析队列上限 |
+| `--rt-asr-endpoint` | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | DashScope WebSocket 地址 |
+| `--rt-translation-target-languages` | `zh` | 多语场景翻译目标语言（逗号分隔） |
+
+补充约束：
+
+- `DASHSCOPE_API_KEY` 必须可用（stream ASR 必需）。
+- `--rt-hotwords-file` 必须是可读的 JSON 数组文件（`[]` 合法）。
+
+### 5.9 `mic-listen` 基础参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--host` | `127.0.0.1` | 监听地址 |
+| `--port` | `18765` | 监听端口 |
+| `--session-dir` | 空 | 输出目录；不传则自动创建 `mic_session_<timestamp>` |
+| `--mic-upload-token` | 空 | 上传令牌；也可用环境变量 `MIC_UPLOAD_TOKEN` |
+| `--mic-chunk-max-bytes` | `10485760` | 单次上传最大字节数 |
+| `--mic-chunk-dir` | `_rt_chunks_mic` | 接收切片目录（相对路径时挂到 `session-dir` 下） |
+
+### 5.10 `mic-listen` 实时参数
+
+`mic-listen` 的以下参数与 `watch` 同名同默认值、含义一致：
+
+```text
+--rt-pipeline-mode
+--rt-chunk-seconds
+--rt-context-window-seconds
+--rt-model
+--rt-stt-model
+--rt-asr-scene
+--rt-asr-model
+--rt-hotwords-file
+--rt-window-sentences
+--rt-stream-analysis-workers
+--rt-stream-queue-size
+--rt-asr-endpoint
+--rt-translation-target-languages
+--rt-keywords-file
+--rt-api-base-url
+--rt-stt-request-timeout-sec
+--rt-stt-stage-timeout-sec
+--rt-stt-retry-count
+--rt-stt-retry-interval-sec
+--rt-analysis-request-timeout-sec
+--rt-analysis-stage-timeout-sec
+--rt-analysis-retry-count
+--rt-analysis-retry-interval-sec
+--rt-alert-threshold
+--rt-dingtalk-enabled
+--rt-dingtalk-cooldown-sec
+--rt-context-min-ready
+--rt-context-recent-required
+--rt-context-wait-timeout-sec-1
+--rt-context-wait-timeout-sec-2
+```
+
+`mic-listen` 额外参数：
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--rt-profile-enabled` | 关闭 | 额外输出性能剖析日志 `realtime_profile.jsonl` |
+
+模式约束：
+
+- chunk 模式：必须显式传 `--rt-stt-model`。
+- stream 模式：必须显式传 `--rt-asr-model` 且必须启用 `--rt-dingtalk-enabled`。
+
+### 5.11 `mic-publish` 参数
+
+| 参数 | 默认值 | 适用模式 | 含义 |
+|---|---|---|---|
+| `--target-url` | 必填 | 全部 | `mic-listen` 地址（如 `http://127.0.0.1:18765`） |
+| `--mic-upload-token` | 必填 | 全部 | 与 `mic-listen` 一致的上传令牌 |
+| `--device` | 必填 | 全部 | 麦克风设备名 |
+| `--rt-pipeline-mode` | `chunk` | 全部 | 发布模式：`chunk` / `stream` |
+| `--chunk-seconds` | `10.0` | chunk | 本地切片长度 |
+| `--stream-frame-duration-ms` | `100` | stream | 每帧推送时长 |
+| `--work-dir` / `--worker-dir` | 空 | chunk | 本地临时切片目录 |
+| `--ffmpeg-bin` | 空 | 全部 | ffmpeg 路径；不传则走 PATH |
+| `--request-timeout-sec` | `10.0` | 全部 | 请求超时 |
+| `--ready-age-sec` | `1.2` | chunk | 文件稳定后再上传的等待时间 |
+| `--retry-base-sec` | `0.5` | 全部 | 重试基准退避 |
+| `--retry-max-sec` | `8.0` | 全部 | 重试最大退避 |
+| `--scan-interval-sec` | `0.2` | chunk | 本地切片扫描周期 |
+
+### 5.12 `mic-list-devices` 参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--ffmpeg-bin` | 空 | ffmpeg 路径；不传则走 PATH |
+
+## 6. 主要输出文件
+
+### 6.1 `watch` 会话目录
+
+- `*.mp4` / `*.mp3`：录制切片。
+- `*.missing.json`：单切片缺失区间。
+- `recording_session_report.json`：会话级录制汇总。
+- `realtime_transcripts.jsonl`：实时转写。
+- `realtime_insights.jsonl`：结构化分析结果。
+- `realtime_insights.log`：中文可读日志。
+- `realtime_asr_events.jsonl`：stream 句级 ASR 事件。
+- `analysis_prompt_trace.jsonl`：分析请求跟踪。
+
+### 6.2 `mic-listen` 会话目录
 
 - `realtime_transcripts.jsonl`
-- `realtime_asr_events.jsonl`（stream 模式）
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
-- 若开启钉钉告警，只会转发 `important=true` 的事件，且 `30s` 冷却窗口内的新紧急事件会直接丢弃。
-
-流式 ASR 连通性/延迟实验（阶段1+2）：
-
-```bash
-python scripts/stream_asr_experiment.py --repeat 5
-```
-
-产物：
-
-- `reports/stream_asr_experiment_<ts>.md`
-- `reports/stream_asr_experiment_<ts>.json`
+- `realtime_asr_events.jsonl`（stream 模式）
+- `realtime_dingtalk_trace.jsonl`（启用钉钉时）
+- `realtime_profile.jsonl`（启用 `--rt-profile-enabled` 时）

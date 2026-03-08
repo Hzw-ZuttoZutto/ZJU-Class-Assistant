@@ -1,0 +1,24 @@
+# 示例文件：复制为 .account 后再填写真实值
+# 用法：cp account .account
+# 说明：键名大小写不敏感，等号右侧直接填值，不要加引号
+
+# [scan/watch 必填] 浙大统一认证账号密码
+USERNAME=your_zju_username
+PASSWORD=your_zju_password
+
+# [watch/mic-listen 实时分析必填，二选一]
+# OpenAI 官方 Key
+OPENAI_API_KEY=your_openai_api_key
+# 或 AIHubMix 网关 Key
+# AIHUBMIX_API_KEY=your_aihubmix_api_key
+
+# [可选] OpenAI 兼容网关地址
+# - 如果只填 AIHUBMIX_API_KEY 且不填该项，默认会使用 https://aihubmix.com/v1
+OPENAI_BASE_URL=https://aihubmix.com/v1
+
+# [stream 模式必填] DashScope 实时 ASR Key
+DASHSCOPE_API_KEY=your_dashscope_api_key
+
+# [开启 --rt-dingtalk-enabled 时必填] 钉钉机器人配置
+DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=your_token
+DINGTALK_SECRET=SECxxxxxxxxxxxxxxxxxxxxxxxx
