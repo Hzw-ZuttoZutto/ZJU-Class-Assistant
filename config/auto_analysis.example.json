@@ -50,6 +50,7 @@
   },
   "courses": [
     {
+      "course_id": 90001,
       "title": "课程A",
       "teacher": "教师A",
       "slots": [

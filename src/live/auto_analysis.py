@@ -22,11 +22,11 @@ from src.auth import LoginTokenManager
 from src.auth.cas_client import ZJUAuthClient
 from src.cli.parser import build_parser
 from src.common.account import resolve_credentials, resolve_dingtalk_bot_settings
+from src.common.course_meta import course_teachers, query_course_detail
 from src.common.http import create_session, get_thread_session
 from src.common.rotating_log import RotatingLineWriter
 from src.live.analysis import _validate_analysis_args
 from src.scan.live_check import LiveCheckResult, check_course_live_status
-from src.scan.service import CourseScanTarget, scan_courses_batch
 
 _SH_TZ = ZoneInfo("Asia/Shanghai")
 _DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -40,13 +40,14 @@ class AutoCourseSlot:
 
 @dataclass
 class AutoCourseSpec:
+    course_id: int
     title: str
     teacher: str
     slots: list[AutoCourseSlot] = field(default_factory=list)
 
     @property
-    def key(self) -> tuple[str, str]:
-        return self.title, self.teacher
+    def key(self) -> tuple[int, str, str]:
+        return self.course_id, self.title, self.teacher
 
 
 @dataclass
@@ -784,45 +785,25 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
             log(f"[auto-analysis] login failed: {token_error}")
             return 1
 
-        targets = [CourseScanTarget(title=course.title, teacher=course.teacher) for course in config.courses]
-        progress_printer = _build_progress_printer(enabled=bool(config.scan.show_progress))
-        batch_result = scan_courses_batch(
+        validation_errors, validated_meta = _validate_configured_courses(
+            config=config,
             token=token_manager.get_token(),
             timeout=int(args.timeout),
             retries=int(config.scan.retries),
-            center=int(config.scan.center),
-            radius=int(config.scan.radius),
-            targets=targets,
-            workers=int(config.scan.workers),
-            reverse=True,
-            stop_when_all_found=bool(config.scan.stop_when_all_found),
-            verbose=False,
-            on_progress=progress_printer,
         )
-        if progress_printer is not None:
-            progress_printer(
-                batch_result.scanned,
-                batch_result.total_candidates,
-                batch_result.matched_count,
-                len(batch_result.target_keys),
-            )
-            print()
-
-        missing_keys = batch_result.missing_keys
-        if missing_keys:
-            log(
-                f"[auto-analysis] pre-search failed missing={len(missing_keys)} "
-                f"scanned={batch_result.scanned}/{batch_result.total_candidates}"
-            )
-            for title, teacher in missing_keys:
-                log(f"[auto-analysis] missing target title={title} teacher={teacher}")
+        if validation_errors:
+            log(f"[auto-analysis] precheck failed total_errors={len(validation_errors)}")
+            for line in validation_errors:
+                log(f"[auto-analysis] precheck error: {line}")
             return 1
 
-        mapping: dict[tuple[str, str], int] = {
-            key: int(match.course_id) for key, match in batch_result.matches.items()
-        }
-        for key, cid in sorted(mapping.items()):
-            log(f"[auto-analysis] pre-search matched title={key[0]} teacher={key[1]} course_id={cid}")
+        for course in config.courses:
+            meta = validated_meta.get(int(course.course_id))
+            teachers = ",".join(meta[1]) if meta is not None else ""
+            log(
+                f"[auto-analysis] precheck ok course_id={course.course_id} "
+                f"title={course.title} teacher={course.teacher} teachers={teachers}"
+            )
 
         webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
         if dingtalk_error:
@@ -835,7 +816,7 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
             retry_count=3,
         )
 
-        slots = _build_slot_runtime(config=config, course_id_mapping=mapping)
+        slots = _build_slot_runtime(config=config)
         scheduler = AutoAnalysisScheduler(
             args=args,
             config=config,
@@ -908,16 +889,36 @@ def load_auto_analysis_config(path: Path) -> AutoAnalysisConfig:
     if not isinstance(courses_raw, list) or not courses_raw:
         raise ValueError("courses must be a non-empty array")
 
-    deduped: dict[tuple[str, str], AutoCourseSpec] = {}
+    deduped: dict[tuple[int, str, str], AutoCourseSpec] = {}
+    course_id_owners: dict[int, tuple[str, str]] = {}
     for index, raw_item in enumerate(courses_raw, start=1):
         if not isinstance(raw_item, dict):
             raise ValueError(f"courses[{index}] must be object")
+        raw_course_id = raw_item.get("course_id", None)
+        if raw_course_id is None or isinstance(raw_course_id, bool):
+            raise ValueError(f"courses[{index}] course_id is required")
+        try:
+            course_id = int(str(raw_course_id).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"courses[{index}] course_id must be an integer") from None
+        if course_id <= 0:
+            raise ValueError(f"courses[{index}] course_id must be > 0")
         title = str(raw_item.get("title", "") or "").strip()
         teacher = str(raw_item.get("teacher", "") or "").strip()
         if not title:
             raise ValueError(f"courses[{index}] title is required")
         if not teacher:
             raise ValueError(f"courses[{index}] teacher is required")
+
+        owner = course_id_owners.get(course_id)
+        if owner is None:
+            course_id_owners[course_id] = (title, teacher)
+        elif owner != (title, teacher):
+            raise ValueError(
+                f"course_id conflict: course_id={course_id} maps to both "
+                f"({owner[0]}, {owner[1]}) and ({title}, {teacher})"
+            )
+
         slots_raw = raw_item.get("slots")
         if not isinstance(slots_raw, list) or not slots_raw:
             raise ValueError(f"courses[{index}] slots must be non-empty array")
@@ -934,10 +935,15 @@ def load_auto_analysis_config(path: Path) -> AutoAnalysisConfig:
                 )
             slot_list.append(AutoCourseSlot(start=start_at, end=end_at))
 
-        key = (title, teacher)
+        key = (course_id, title, teacher)
         existing = deduped.get(key)
         if existing is None:
-            deduped[key] = AutoCourseSpec(title=title, teacher=teacher, slots=list(slot_list))
+            deduped[key] = AutoCourseSpec(
+                course_id=course_id,
+                title=title,
+                teacher=teacher,
+                slots=list(slot_list),
+            )
         else:
             existing.slots.extend(slot_list)
 
@@ -1044,14 +1050,12 @@ def _validate_analysis_args_map(analysis_args: dict[str, Any]) -> str:
 def _build_slot_runtime(
     *,
     config: AutoAnalysisConfig,
-    course_id_mapping: dict[tuple[str, str], int],
 ) -> list[CourseSlotRuntime]:
     slots: list[CourseSlotRuntime] = []
     for course in config.courses:
-        cid = course_id_mapping[(course.title, course.teacher)]
         for index, slot in enumerate(course.slots, start=1):
             slot_id = (
-                f"{course.title}|{course.teacher}|"
+                f"{course.course_id}|{course.title}|{course.teacher}|"
                 f"{slot.start.strftime('%Y%m%d%H%M%S')}|{index}"
             )
             slots.append(
@@ -1059,7 +1063,7 @@ def _build_slot_runtime(
                     slot_id=slot_id,
                     course_title=course.title,
                     teacher=course.teacher,
-                    course_id=cid,
+                    course_id=int(course.course_id),
                     start_at=slot.start,
                     end_at=slot.end,
                 )
@@ -1075,19 +1079,54 @@ def _resolve_output_root(analysis_args: dict[str, Any]) -> Path:
     return Path.cwd()
 
 
-def _build_progress_printer(enabled: bool):
-    if not enabled:
-        return None
+def _validate_configured_courses(
+    *,
+    config: AutoAnalysisConfig,
+    token: str,
+    timeout: int,
+    retries: int,
+) -> tuple[list[str], dict[int, tuple[str, list[str]]]]:
+    errors: list[str] = []
+    cache: dict[int, tuple[str, list[str]]] = {}
+    session = create_session(pool_size=8)
+    try:
+        for course in config.courses:
+            course_id = int(course.course_id)
+            meta = cache.get(course_id)
+            if meta is None:
+                data = query_course_detail(
+                    session=session,
+                    token=token,
+                    timeout=int(timeout),
+                    course_id=course_id,
+                    retries=max(0, int(retries)),
+                )
+                if not data:
+                    errors.append(
+                        f"course_id={course_id} title={course.title} teacher={course.teacher} "
+                        "detail unavailable"
+                    )
+                    continue
+                fetched_title = str(data.get("title") or "").strip()
+                fetched_teachers = course_teachers(data)
+                cache[course_id] = (fetched_title, fetched_teachers)
+                meta = cache[course_id]
 
-    def _printer(scanned: int, total: int, found: int, target: int) -> None:
-        safe_total = max(1, int(total))
-        percent = (float(scanned) / float(safe_total)) * 100.0
-        width = 28
-        done = int((max(0.0, min(percent, 100.0)) / 100.0) * width)
-        bar = "#" * done + "-" * (width - done)
-        sys.stdout.write(
-            f"\r[batch-scan] [{bar}] {percent:6.2f}% scanned={scanned}/{total} found={found}/{target}"
-        )
-        sys.stdout.flush()
+            fetched_title, fetched_teachers = meta
+            if fetched_title != course.title:
+                errors.append(
+                    f"course_id={course_id} title mismatch config={course.title} fetched={fetched_title}"
+                )
+                continue
+            if course.teacher not in fetched_teachers:
+                errors.append(
+                    f"course_id={course_id} teacher mismatch config={course.teacher} "
+                    f"fetched={','.join(fetched_teachers)}"
+                )
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
 
-    return _printer
+    return errors, cache

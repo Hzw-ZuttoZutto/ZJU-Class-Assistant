@@ -172,6 +172,7 @@ python -m src.main auto-analysis --config config/auto_analysis.json
   },
   "courses": [
     {
+      "course_id": 90001,
       "title": "课程A",
       "teacher": "教师A",
       "slots": [
@@ -185,7 +186,9 @@ python -m src.main auto-analysis --config config/auto_analysis.json
 说明：
 
 - 仅支持绝对时间段，固定时区 `Asia/Shanghai`。
-- `scan` 阶段按 `center+radius` 倒序批量预搜索，找齐即停；任一课程未命中会整体失败退出。
+- `courses[].course_id` 为必填，启动前会校验：`course_id` 可查、标题精确匹配、教师命中。
+- 任一课程校验失败会整体阻断启动（fail-fast）。
+- `scan` 区块仅做兼容保留，不再参与 `course_id` 映射推断。
 - `analysis_args` 为统一全局参数，不能包含 `course_id/sub_id`（由外壳运行时自动注入）。
 
 ### 4.4 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
@@ -256,6 +259,10 @@ python -m src.main mic-publish
 | `--tenant-code` | `112` | 租户代码 |
 | `--authcode` | 空 | 验证码（仅登录要求时填写） |
 | `--timeout` | `20` | HTTP 超时秒数 |
+
+补充约束：
+
+- `courses[]` 中每条课程必须包含 `course_id`，且启动时会对 `course_id/title/teacher` 做一致性校验。
 
 补充说明：
 

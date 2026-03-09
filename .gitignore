@@ -33,3 +33,6 @@ dist/
 debug_doc
 .mic_*
 mic_session_*
+
+# Local auto-analysis personal schedule
+config/auto_analysis.json
