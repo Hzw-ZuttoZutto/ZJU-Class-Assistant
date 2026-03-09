@@ -7,6 +7,7 @@ from src.live.insight.models import (
     TranscriptChunk,
 )
 from src.live.insight.stage_processor import InsightStageProcessor
+from src.live.insight.runtime_monitor import AnalysisRuntimeObserver
 from src.live.insight.service import RealtimeInsightService
 from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline
 from src.live.insight.stream_asr import RealtimeAsrEvent, resolve_default_asr_model
@@ -20,6 +21,7 @@ __all__ = [
     "DingTalkNotifier",
     "DingTalkNotifierMetadata",
     "InsightStageProcessor",
+    "AnalysisRuntimeObserver",
     "RealtimeInsightService",
     "StreamRealtimeInsightPipeline",
     "RealtimeAsrEvent",

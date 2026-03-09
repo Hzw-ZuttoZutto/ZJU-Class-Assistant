@@ -35,7 +35,7 @@ def _analysis_args() -> argparse.Namespace:
         rt_analysis_retry_count=4,
         rt_analysis_retry_interval_sec=0.2,
         rt_alert_threshold=90,
-        rt_dingtalk_enabled=False,
+        rt_dingtalk_enabled=True,
         rt_dingtalk_cooldown_sec=30.0,
         rt_dingtalk_queue_size=500,
         rt_context_recent_required=4,
@@ -141,6 +141,10 @@ class AnalysisModeTests(unittest.TestCase):
             mock.patch("src.live.analysis.JoinRoomClient.try_join", return_value=_JoinResult()),
             mock.patch("src.live.analysis.StreamPoller", _FakePoller),
             mock.patch("src.live.analysis.RealtimeInsightService", _FakeInsightService),
+            mock.patch(
+                "src.live.analysis.resolve_dingtalk_bot_settings",
+                return_value=("https://example.test/robot/send?access_token=x", "secret", ""),
+            ),
             mock.patch("src.live.analysis.time.sleep", side_effect=KeyboardInterrupt),
         ):
             code = run_analysis(args)
@@ -151,7 +155,13 @@ class AnalysisModeTests(unittest.TestCase):
         self.assertTrue(_FakeInsightService.instances[0].started)
         self.assertTrue(_FakeInsightService.instances[0].stopped)
 
-    def test_analysis_stream_allows_dingtalk_disabled(self) -> None:
+    def test_analysis_requires_dingtalk_enabled(self) -> None:
+        args = _analysis_args()
+        args.rt_dingtalk_enabled = False
+        code = run_analysis(args)
+        self.assertEqual(code, 1)
+
+    def test_analysis_stream_uses_dingtalk_notifier(self) -> None:
         args = _analysis_args()
         _FakePoller.instance = None
         _FakeInsightService.instances.clear()
@@ -165,7 +175,10 @@ class AnalysisModeTests(unittest.TestCase):
             mock.patch("src.live.analysis.JoinRoomClient.try_join", return_value=_JoinResult()),
             mock.patch("src.live.analysis.StreamPoller", _FakePoller),
             mock.patch("src.live.analysis.RealtimeInsightService", _FakeInsightService),
-            mock.patch("src.live.analysis.resolve_dingtalk_bot_settings", side_effect=AssertionError("should not call")),
+            mock.patch(
+                "src.live.analysis.resolve_dingtalk_bot_settings",
+                return_value=("https://example.test/robot/send?access_token=x", "secret", ""),
+            ),
             mock.patch("src.live.analysis.time.sleep", side_effect=KeyboardInterrupt),
         ):
             code = run_analysis(args)
@@ -198,6 +211,10 @@ class AnalysisModeTests(unittest.TestCase):
             mock.patch("src.live.analysis.JoinRoomClient.try_join", return_value=_JoinResult()),
             mock.patch("src.live.analysis.StreamPoller", _FakePoller),
             mock.patch("src.live.analysis.RealtimeInsightService", _FakeInsightService),
+            mock.patch(
+                "src.live.analysis.resolve_dingtalk_bot_settings",
+                return_value=("https://example.test/robot/send?access_token=x", "secret", ""),
+            ),
             mock.patch("src.live.analysis.time.sleep", side_effect=_fake_sleep),
         ):
             code = run_analysis(args)

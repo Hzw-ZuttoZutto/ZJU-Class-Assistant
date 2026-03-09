@@ -276,6 +276,51 @@ class StreamPipelineTests(unittest.TestCase):
             finally:
                 pipeline.stop()
 
+    def test_runtime_metrics_include_stream_and_stage_counters(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            hotwords = base / "hotwords.json"
+            hotwords.write_text('["签到"]', encoding="utf-8")
+            config = self._build_config(hotwords)
+            pipeline = StreamRealtimeInsightPipeline(
+                session_dir=base,
+                config=config,
+                keywords=KeywordConfig(),
+                llm_client=_FakeLlmClient(),
+                dashscope_api_key="k",
+                notifier=_FakeNotifier(),  # type: ignore[arg-type]
+                asr_client=_FakeAsrClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            pipeline.start()
+            pipeline.submit_audio_frame(b"\x00\x01")
+            pipeline._on_asr_event(
+                RealtimeAsrEvent(
+                    global_seq=1,
+                    provider_sentence_id="1",
+                    ts_local="20260308_120000",
+                    text="测试",
+                    event_type="final",
+                    is_final=True,
+                    start_ms=0,
+                    end_ms=100,
+                    model="paraformer-realtime-v2",
+                    scene="zh",
+                )
+            )
+            time.sleep(0.2)
+            metrics = pipeline.get_runtime_metrics()
+            pipeline.stop()
+
+            self.assertGreaterEqual(int(metrics.get("audio_frames_in_total", 0) or 0), 1)
+            self.assertGreaterEqual(int(metrics.get("asr_final_total", 0) or 0), 1)
+            stage_metrics = metrics.get("analysis_metrics")
+            self.assertIsInstance(stage_metrics, dict)
+            assert isinstance(stage_metrics, dict)
+            self.assertIn("analysis_ok_total", stage_metrics)
+            self.assertIn("analysis_drop_timeout_total", stage_metrics)
+            self.assertIn("analysis_drop_error_total", stage_metrics)
+
     def test_load_hotwords_raises_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "missing_hotwords.json"

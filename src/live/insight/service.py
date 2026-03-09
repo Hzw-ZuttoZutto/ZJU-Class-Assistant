@@ -133,6 +133,48 @@ class RealtimeInsightService:
             thread = self._thread
             return bool(thread is not None and thread.is_alive())
 
+    def get_runtime_snapshot(self) -> dict[str, object]:
+        stage_metrics: dict[str, int] = {}
+        stream_metrics: dict[str, object] = {}
+
+        stage = self._stage_processor
+        if stage is not None:
+            getter = getattr(stage, "get_runtime_metrics", None)
+            if callable(getter):
+                try:
+                    raw = getter()
+                    if isinstance(raw, dict):
+                        stage_metrics = {
+                            str(k): int(v) for k, v in raw.items() if isinstance(v, int)
+                        }
+                except Exception:
+                    stage_metrics = {}
+
+        pipeline = self._stream_pipeline
+        if pipeline is not None:
+            getter = getattr(pipeline, "get_runtime_metrics", None)
+            if callable(getter):
+                try:
+                    raw = getter()
+                    if isinstance(raw, dict):
+                        stream_metrics = dict(raw)
+                        embedded = stream_metrics.get("analysis_metrics")
+                        if isinstance(embedded, dict):
+                            stage_metrics = {
+                                str(k): int(v)
+                                for k, v in embedded.items()
+                                if isinstance(v, int)
+                            }
+                except Exception:
+                    stream_metrics = {}
+
+        return {
+            "service_running": self.is_running(),
+            "pipeline_mode": self._pipeline_mode,
+            "stream_metrics": stream_metrics,
+            "stage_metrics": stage_metrics,
+        }
+
     def _run(self) -> None:
         try:
             if not self._prepare_runtime():

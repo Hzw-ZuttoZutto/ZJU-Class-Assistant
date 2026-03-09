@@ -66,10 +66,14 @@ class StreamRealtimeInsightPipeline:
         self._reconnect_lock = threading.Lock()
         self._reconnecting = False
         self._reconnect_delay_sec = 1.0
+        self._reconnect_started_at_mono = 0.0
         self._started = False
         self._stream_t0_ms: int | None = None
 
         self._final_seq = 0
+        self._audio_frames_in_total = 0
+        self._asr_final_total = 0
+        self._queue_drop_total = 0
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, int(getattr(self.config, "stream_analysis_workers", 32))),
             thread_name_prefix="rt-stream-analysis",
@@ -128,6 +132,8 @@ class StreamRealtimeInsightPipeline:
         try:
             if data:
                 self.mark_server_frame_received()
+                with self._state_lock:
+                    self._audio_frames_in_total += 1
             ok = bool(self._asr_client.send_audio_frame(data))
             if not ok:
                 self._on_asr_error("send frame returned False")
@@ -158,6 +164,7 @@ class StreamRealtimeInsightPipeline:
 
         with self._state_lock:
             self._final_seq += 1
+            self._asr_final_total += 1
             chunk_seq = int(self._final_seq)
         self._enqueue_final(chunk_seq=chunk_seq, event=event)
 
@@ -171,6 +178,7 @@ class StreamRealtimeInsightPipeline:
                 self._pending.append((chunk_seq, event))
                 if len(self._pending) > queue_size:
                     dropped_seq, dropped_event = self._pending.popleft()
+                    self._queue_drop_total += 1
                     self._notify_drop_alert(chunk_seq=dropped_seq, event=dropped_event)
 
     def _submit_locked(self, *, chunk_seq: int, event: RealtimeAsrEvent) -> None:
@@ -249,6 +257,7 @@ class StreamRealtimeInsightPipeline:
             if self._reconnecting:
                 return False
             self._reconnecting = True
+            self._reconnect_started_at_mono = time.monotonic()
         thread = threading.Thread(target=self._reconnect_loop, name="rt-stream-asr-reconnect", daemon=True)
         thread.start()
         return True
@@ -273,10 +282,45 @@ class StreamRealtimeInsightPipeline:
         finally:
             with self._reconnect_lock:
                 self._reconnecting = False
+                self._reconnect_started_at_mono = 0.0
 
     def _start_asr(self) -> None:
         self._asr_client.start()
         self._reconnect_delay_sec = 1.0
+
+    def get_runtime_metrics(self) -> dict[str, Any]:
+        with self._state_lock:
+            audio_frames_in_total = int(self._audio_frames_in_total)
+            asr_final_total = int(self._asr_final_total)
+            queue_drop_total = int(self._queue_drop_total)
+            pending_count = int(len(self._pending))
+            active_workers = int(len(self._active_futures))
+
+        with self._reconnect_lock:
+            reconnect_active = bool(self._reconnecting)
+            started_at = float(self._reconnect_started_at_mono)
+        reconnect_elapsed_sec = max(0.0, time.monotonic() - started_at) if reconnect_active and started_at > 0 else 0.0
+
+        stage_metrics: dict[str, int] = {}
+        get_metrics = getattr(self._stage_processor, "get_runtime_metrics", None)
+        if callable(get_metrics):
+            try:
+                raw = get_metrics()
+                if isinstance(raw, dict):
+                    stage_metrics = {str(k): int(v) for k, v in raw.items() if isinstance(v, int)}
+            except Exception:
+                stage_metrics = {}
+
+        return {
+            "audio_frames_in_total": audio_frames_in_total,
+            "asr_final_total": asr_final_total,
+            "queue_drop_total": queue_drop_total,
+            "pending_count": pending_count,
+            "active_workers": active_workers,
+            "reconnect_active": reconnect_active,
+            "reconnect_elapsed_sec": reconnect_elapsed_sec,
+            "analysis_metrics": stage_metrics,
+        }
 
     def _log(self, message: str) -> None:
         self._log_fn(message)

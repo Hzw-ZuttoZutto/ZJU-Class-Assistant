@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument(
         "--rt-dingtalk-enabled",
         action="store_true",
-        help="Enable DingTalk bot alerts for important realtime insights",
+        help="Enable DingTalk bot alerts for realtime insights (required in analysis mode)",
     )
     analysis.add_argument(
         "--rt-dingtalk-cooldown-sec",

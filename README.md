@@ -65,8 +65,8 @@ python -m src.main scan --teacher '王强' --title '编译原理'
 | `AIHUBMIX_API_KEY` | 与 `OPENAI_API_KEY` 二选一 | `analysis` / `mic-listen` 实时分析 | AIHubMix 网关 Key |
 | `OPENAI_BASE_URL` | 否 | `analysis` / `mic-listen` 实时分析 | OpenAI 兼容网关地址 |
 | `DASHSCOPE_API_KEY` | stream 模式必填 | `analysis` / `mic-listen(stream)` | DashScope 实时 ASR Key |
-| `DINGTALK_WEBHOOK` | 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人 Webhook |
-| `DINGTALK_SECRET` | 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人签名 Secret |
+| `DINGTALK_WEBHOOK` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人 Webhook |
+| `DINGTALK_SECRET` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人签名 Secret |
 
 ### 3.2 优先级规则
 
@@ -256,7 +256,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 | `--rt-analysis-retry-count` | `4` | 分析阶段最大尝试次数 |
 | `--rt-analysis-retry-interval-sec` | `0.2` | 分析重试间隔 |
 | `--rt-alert-threshold` | `90` | 触发 `[ALERT]` 的阈值 |
-| `--rt-dingtalk-enabled` | 关闭 | 开启钉钉告警推送 |
+| `--rt-dingtalk-enabled` | 关闭（`analysis` 启动时必须显式开启） | 开启钉钉告警推送 |
 | `--rt-dingtalk-cooldown-sec` | `30.0` | 钉钉告警冷却时间（秒） |
 | `--rt-dingtalk-queue-size` | `500` | 钉钉发送队列上限（满时丢最旧保最新） |
 | `--rt-context-recent-required` | `4` | 最近必须可用片段数 |
@@ -269,7 +269,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 
 - `DASHSCOPE_API_KEY` 必须可用（stream ASR 必需）。
 - `--rt-hotwords-file` 必须是可读的 JSON 数组文件（`[]` 合法）。
-- `--rt-dingtalk-enabled` 可选，不开启时只写本地日志，不发钉钉。
+- `analysis` 模式必须显式传 `--rt-dingtalk-enabled`，并且机器人配置（`DINGTALK_WEBHOOK` / `DINGTALK_SECRET`）必须可用。
 - `--rt-dingtalk-queue-size` 必须 `>= 1`。
 
 ### 5.5 `mic-listen` 基础参数
@@ -360,6 +360,9 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 - `realtime_insights.log`：中文可读日志。
 - `realtime_asr_events.jsonl`：stream 句级 ASR 事件。
 - `analysis_prompt_trace.jsonl`：分析请求跟踪。
+- `realtime_runtime_heartbeat.jsonl`：运行态心跳（默认 10s 一条，含线程状态/计数器快照）。
+- `realtime_runtime_events.jsonl`：运行态故障与恢复事件（P0/P1 判级）。
+- `realtime_runtime_dingtalk_trace.jsonl`：运行态分级告警发送跟踪（有运行态告警时写入）。
 - 以上 realtime 日志默认启用按大小轮转：主文件达到 `--rt-log-rotate-max-bytes` 后滚动为 `.1/.2/...`，最多保留 `--rt-log-rotate-backup-count` 份历史。
 
 ### 6.2 `mic-listen` 会话目录

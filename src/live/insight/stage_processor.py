@@ -53,6 +53,9 @@ class InsightStageProcessor:
         self._last_context_reason = ""
         self._history_window_limit = self._compute_history_window_limit()
         self._history_window: deque[TranscriptChunk] = deque()
+        self._analysis_ok_total = 0
+        self._analysis_drop_timeout_total = 0
+        self._analysis_drop_error_total = 0
 
         self._insight_jsonl_path = self.session_dir / "realtime_insights.jsonl"
         self._text_log_path = self.session_dir / "realtime_insights.log"
@@ -708,6 +711,7 @@ class InsightStageProcessor:
         context_text: str = "",
         profile: dict[str, Any] | None = None,
     ) -> None:
+        self._record_analysis_status(status)
         summary = "分析超时已丢弃" if status == "analysis_drop_timeout" else "分析失败已丢弃"
         event = InsightEvent(
             ts=ts,
@@ -760,6 +764,7 @@ class InsightStageProcessor:
         context_text: str = "",
         profile: dict[str, Any] | None = None,
     ) -> None:
+        self._record_analysis_status("ok")
         summary = result.summary or "当前没有什么重要内容"
         context_summary = result.context_summary or "无重要内容"
         event_type = self._normalize_event_type(result)
@@ -863,6 +868,14 @@ class InsightStageProcessor:
         if self.notifier is not None:
             self.notifier.stop()
 
+    def get_runtime_metrics(self) -> dict[str, int]:
+        with self._state_lock:
+            return {
+                "analysis_ok_total": int(self._analysis_ok_total),
+                "analysis_drop_timeout_total": int(self._analysis_drop_timeout_total),
+                "analysis_drop_error_total": int(self._analysis_drop_error_total),
+            }
+
     def mark_and_check_recovery(self, chunk_seq: int) -> bool:
         with self._state_lock:
             is_recovery = chunk_seq <= self._max_written_chunk_seq
@@ -872,6 +885,18 @@ class InsightStageProcessor:
 
     def _is_stopping(self) -> bool:
         return bool(self._stop_event is not None and self._stop_event.is_set())
+
+    def _record_analysis_status(self, status: str) -> None:
+        normalized = str(status or "").strip().lower()
+        with self._state_lock:
+            if normalized == "ok":
+                self._analysis_ok_total += 1
+                return
+            if normalized == "analysis_drop_timeout":
+                self._analysis_drop_timeout_total += 1
+                return
+            if normalized.startswith("analysis_drop_"):
+                self._analysis_drop_error_total += 1
 
     def _compute_history_window_limit(self) -> int:
         target_chunks = max(1, int(getattr(self.config, "context_target_chunks", 18)))

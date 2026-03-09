@@ -12,6 +12,7 @@ from src.common.account import resolve_credentials, resolve_dingtalk_bot_setting
 from src.common.course_meta import fetch_course_meta
 from src.common.http import create_session
 from src.live.insight import (
+    AnalysisRuntimeObserver,
     DingTalkNotifier,
     DingTalkNotifierMetadata,
     RealtimeInsightConfig,
@@ -21,14 +22,6 @@ from src.live.insight.stream_pipeline import load_hotwords
 from src.live.joiner import JoinRoomClient
 from src.live.poller import StreamPoller
 from src.live.recording.models import build_session_folder_name
-
-
-class _NoopDingTalkNotifier:
-    def notify_event(self, _event, **_kwargs) -> bool:
-        return False
-
-    def stop(self) -> None:
-        return
 
 
 def run_analysis(args: argparse.Namespace) -> int:
@@ -121,26 +114,38 @@ def run_analysis(args: argparse.Namespace) -> int:
 
     dingtalk_enabled = bool(getattr(args, "rt_dingtalk_enabled", False))
     dingtalk_queue_size = max(1, int(getattr(args, "rt_dingtalk_queue_size", 500)))
-    notifier = _NoopDingTalkNotifier()
-    if dingtalk_enabled:
-        webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
-        if dingtalk_error:
-            print(f"Analysis failed: {dingtalk_error}", file=sys.stderr)
-            return 1
-        notifier = DingTalkNotifier(
-            webhook=webhook,
-            secret=secret,
-            cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
-            queue_size=dingtalk_queue_size,
-            metadata=DingTalkNotifierMetadata(
-                course_title=course_meta.title,
-                teacher_name=course_meta.primary_teacher,
-            ),
-            trace_path=session_dir / "realtime_dingtalk_trace.jsonl",
-            log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
-            log_rotate_backup_count=max(1, int(getattr(args, "rt_log_rotate_backup_count", 20))),
-            log_fn=print,
-        )
+    webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
+    if dingtalk_error:
+        print(f"Analysis failed: {dingtalk_error}", file=sys.stderr)
+        return 1
+    log_rotate_max_bytes = max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024)))
+    log_rotate_backup_count = max(1, int(getattr(args, "rt_log_rotate_backup_count", 20)))
+    notifier_metadata = DingTalkNotifierMetadata(
+        course_title=course_meta.title,
+        teacher_name=course_meta.primary_teacher,
+    )
+    notifier = DingTalkNotifier(
+        webhook=webhook,
+        secret=secret,
+        cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+        queue_size=dingtalk_queue_size,
+        metadata=notifier_metadata,
+        trace_path=session_dir / "realtime_dingtalk_trace.jsonl",
+        log_rotate_max_bytes=log_rotate_max_bytes,
+        log_rotate_backup_count=log_rotate_backup_count,
+        log_fn=print,
+    )
+    runtime_notifier = DingTalkNotifier(
+        webhook=webhook,
+        secret=secret,
+        cooldown_sec=0.0,
+        queue_size=dingtalk_queue_size,
+        metadata=notifier_metadata,
+        trace_path=session_dir / "realtime_runtime_dingtalk_trace.jsonl",
+        log_rotate_max_bytes=log_rotate_max_bytes,
+        log_rotate_backup_count=log_rotate_backup_count,
+        log_fn=print,
+    )
 
     asr_scene = str(getattr(args, "rt_asr_scene", "zh") or "zh").strip().lower() or "zh"
     asr_model = (getattr(args, "rt_asr_model", "") or "").strip()
@@ -179,8 +184,8 @@ def run_analysis(args: argparse.Namespace) -> int:
         dingtalk_queue_size=dingtalk_queue_size,
         dingtalk_send_timeout_sec=5.0,
         dingtalk_send_retry_count=5,
-        log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
-        log_rotate_backup_count=max(1, int(getattr(args, "rt_log_rotate_backup_count", 20))),
+        log_rotate_max_bytes=log_rotate_max_bytes,
+        log_rotate_backup_count=log_rotate_backup_count,
         max_concurrency=1,
         context_min_ready=0,
         context_recent_required=max(0, int(args.rt_context_recent_required)),
@@ -200,6 +205,57 @@ def run_analysis(args: argparse.Namespace) -> int:
         config=insight_config,
         notifier=notifier,
     )
+    runtime_observer = AnalysisRuntimeObserver(
+        session_dir=session_dir,
+        notifier=runtime_notifier,
+        heartbeat_interval_sec=10.0,
+        p0_cooldown_sec=15.0,
+        p1_cooldown_sec=45.0,
+        data_stall_threshold_sec=15.0,
+        reconnect_p1_threshold_sec=20.0,
+        reconnect_p0_threshold_sec=60.0,
+        log_rotate_max_bytes=log_rotate_max_bytes,
+        log_rotate_backup_count=log_rotate_backup_count,
+        log_fn=print,
+    )
+
+    def _collect_runtime_snapshot() -> dict[str, object]:
+        poller_metrics: dict[str, object] = {}
+        poller_metrics_getter = getattr(poller, "get_metrics", None)
+        if callable(poller_metrics_getter):
+            try:
+                payload = poller_metrics_getter()
+            except Exception as exc:
+                print(f"[analysis][runtime] poller metrics failed: {exc}", file=sys.stderr)
+                payload = {}
+            if isinstance(payload, dict):
+                poller_metrics = payload
+
+        snapshot: dict[str, object] = {
+            "poller_running": bool(poller.is_running()),
+            "insight_running": bool(insight_service.is_running()),
+            "poller_metrics": poller_metrics,
+            "stream_metrics": {},
+            "stage_metrics": {},
+        }
+        runtime_getter = getattr(insight_service, "get_runtime_snapshot", None)
+        if callable(runtime_getter):
+            try:
+                payload = runtime_getter()
+            except Exception as exc:
+                print(f"[analysis][runtime] snapshot failed: {exc}", file=sys.stderr)
+                payload = {}
+            if isinstance(payload, dict):
+                stream_metrics = payload.get("stream_metrics")
+                stage_metrics = payload.get("stage_metrics")
+                service_running = payload.get("service_running")
+                if isinstance(stream_metrics, dict):
+                    snapshot["stream_metrics"] = stream_metrics
+                if isinstance(stage_metrics, dict):
+                    snapshot["stage_metrics"] = stage_metrics
+                if isinstance(service_running, bool):
+                    snapshot["insight_running"] = bool(service_running)
+        return snapshot
 
     print(
         "Analysis started(stream): "
@@ -218,8 +274,7 @@ def run_analysis(args: argparse.Namespace) -> int:
             "Realtime DingTalk alert enabled: "
             f"cooldown={insight_config.dingtalk_cooldown_sec:.1f}s"
         )
-    else:
-        print("Realtime DingTalk alert disabled.")
+    print("Realtime runtime monitor enabled: heartbeat=10s, alert_cooldown(P0=15s,P1=45s)")
     print("Press Ctrl+C to stop.")
 
     poller.start()
@@ -231,8 +286,10 @@ def run_analysis(args: argparse.Namespace) -> int:
         insight_service.start()
         while True:
             time.sleep(0.5)
-            poller_running = bool(poller.is_running())
-            insight_running = bool(insight_service.is_running())
+            runtime_snapshot = _collect_runtime_snapshot()
+            runtime_observer.observe(runtime_snapshot)
+            poller_running = bool(runtime_snapshot.get("poller_running", False))
+            insight_running = bool(runtime_snapshot.get("insight_running", False))
             if poller_running and insight_running:
                 watchdog_backoff_sec = watchdog_base_sec
                 watchdog_next_retry_at = 0.0
@@ -250,6 +307,11 @@ def run_analysis(args: argparse.Namespace) -> int:
                 except Exception as exc:
                     restart_ok = False
                     print(f"[analysis][watchdog] poller restart failed: {exc}", file=sys.stderr)
+                    runtime_observer.notify_watchdog_restart_failed(
+                        component="poller",
+                        error=str(exc),
+                        snapshot=_collect_runtime_snapshot(),
+                    )
 
             if not insight_running:
                 print("[analysis][watchdog] insight thread stopped; restarting")
@@ -258,6 +320,11 @@ def run_analysis(args: argparse.Namespace) -> int:
                 except Exception as exc:
                     restart_ok = False
                     print(f"[analysis][watchdog] insight restart failed: {exc}", file=sys.stderr)
+                    runtime_observer.notify_watchdog_restart_failed(
+                        component="insight",
+                        error=str(exc),
+                        snapshot=_collect_runtime_snapshot(),
+                    )
 
             if restart_ok and poller.is_running() and insight_service.is_running():
                 watchdog_backoff_sec = watchdog_base_sec
@@ -268,11 +335,16 @@ def run_analysis(args: argparse.Namespace) -> int:
                 f"[analysis][watchdog] recovery pending; retry in {watchdog_backoff_sec:.1f}s",
                 file=sys.stderr,
             )
+            runtime_observer.notify_watchdog_recovery_pending(
+                retry_in_sec=watchdog_backoff_sec,
+                snapshot=_collect_runtime_snapshot(),
+            )
             watchdog_next_retry_at = now + watchdog_backoff_sec
             watchdog_backoff_sec = min(watchdog_max_sec, watchdog_backoff_sec * 2.0)
     except KeyboardInterrupt:
         pass
     finally:
+        runtime_observer.close()
         insight_service.stop()
         poller.stop()
 
@@ -280,6 +352,8 @@ def run_analysis(args: argparse.Namespace) -> int:
 
 
 def _validate_analysis_args(args: argparse.Namespace) -> str:
+    if not bool(getattr(args, "rt_dingtalk_enabled", False)):
+        return "analysis mode requires --rt-dingtalk-enabled and valid DingTalk bot settings"
     asr_model = (getattr(args, "rt_asr_model", None) or "").strip()
     if not asr_model:
         return "stream mode requires explicit --rt-asr-model"
