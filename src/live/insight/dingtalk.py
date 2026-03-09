@@ -15,6 +15,7 @@ from typing import Any, Callable
 from urllib.parse import quote_plus
 
 from src.common.http import get_thread_session
+from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.models import InsightEvent
 
 _CHUNK_TS_PATTERN = re.compile(r"(\d{8}_\d{6})")
@@ -36,6 +37,8 @@ class DingTalkNotifier:
         send_timeout_sec: float = 5.0,
         send_retry_count: int = 5,
         trace_path: Path | None = None,
+        log_rotate_max_bytes: int = 64 * 1024 * 1024,
+        log_rotate_backup_count: int = 20,
         metadata: DingTalkNotifierMetadata | None = None,
         log_fn: Callable[[str], None] | None = None,
     ) -> None:
@@ -45,6 +48,15 @@ class DingTalkNotifier:
         self.send_timeout_sec = max(1.0, float(send_timeout_sec))
         self.send_retry_count = max(1, int(send_retry_count))
         self.trace_path = trace_path
+        self._trace_writer: RotatingLineWriter | None = (
+            RotatingLineWriter(
+                path=trace_path,
+                max_bytes=max(1, int(log_rotate_max_bytes)),
+                backup_count=max(1, int(log_rotate_backup_count)),
+            )
+            if trace_path is not None
+            else None
+        )
         self.metadata = metadata or DingTalkNotifierMetadata()
         self._log_fn = log_fn or print
 
@@ -330,7 +342,8 @@ class DingTalkNotifier:
         trace_context: dict[str, int | None] | None,
     ) -> None:
         path = self.trace_path
-        if path is None:
+        writer = self._trace_writer
+        if path is None or writer is None:
             return
         payload: dict[str, Any] = {
             "ts_local": event.ts.astimezone().isoformat(),
@@ -353,10 +366,7 @@ class DingTalkNotifier:
             payload["stream_t0_ms"] = None
 
         with self._trace_lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _log(self, msg: str) -> None:
         self._log_fn(msg)

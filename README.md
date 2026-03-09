@@ -261,6 +261,8 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 | `--rt-context-recent-required` | `4` | 最近必须可用片段数 |
 | `--rt-context-wait-timeout-sec-1` | `1.0` | 最近片段齐备后额外等待时间 |
 | `--rt-context-wait-timeout-sec-2` | `5.0` | 等待最近片段齐备的最大时长 |
+| `--rt-log-rotate-max-bytes` | `67108864` | 单个 realtime 日志文件轮转阈值（字节） |
+| `--rt-log-rotate-backup-count` | `20` | 每个 realtime 日志最多保留历史份数 |
 
 补充约束：
 
@@ -305,6 +307,8 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 --rt-context-recent-required
 --rt-context-wait-timeout-sec-1
 --rt-context-wait-timeout-sec-2
+--rt-log-rotate-max-bytes
+--rt-log-rotate-backup-count
 ```
 
 `mic-listen` 额外参数：
@@ -317,6 +321,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 
 - chunk 模式：必须显式传 `--rt-stt-model`。
 - stream 模式：必须显式传 `--rt-asr-model` 且必须启用 `--rt-dingtalk-enabled`。
+- 日志轮转参数约束：`--rt-log-rotate-max-bytes >= 1048576`，`--rt-log-rotate-backup-count >= 1`。
 
 ### 5.7 `mic-publish` 参数
 
@@ -351,6 +356,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 - `realtime_insights.log`：中文可读日志。
 - `realtime_asr_events.jsonl`：stream 句级 ASR 事件。
 - `analysis_prompt_trace.jsonl`：分析请求跟踪。
+- 以上 realtime 日志默认启用按大小轮转：主文件达到 `--rt-log-rotate-max-bytes` 后滚动为 `.1/.2/...`，最多保留 `--rt-log-rotate-backup-count` 份历史。
 
 ### 6.2 `mic-listen` 会话目录
 
@@ -360,6 +366,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 - `realtime_asr_events.jsonl`（stream 模式）
 - `realtime_dingtalk_trace.jsonl`（启用钉钉时）
 - `realtime_profile.jsonl`（启用 `--rt-profile-enabled` 时）
+- 以上 realtime 日志同样启用按大小轮转（命名规则与 `analysis` 一致）。
 
 ## 7. 自定义关键词与热词
 

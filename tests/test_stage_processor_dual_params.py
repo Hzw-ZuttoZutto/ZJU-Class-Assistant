@@ -288,6 +288,31 @@ class StageProcessorDualParamTests(unittest.TestCase):
             self.assertEqual(all_chunks[0].chunk_seq, 45)
             self.assertEqual(all_chunks[-1].chunk_seq, 300)
 
+    def test_stage_processor_realtime_logs_rotate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                log_rotate_max_bytes=128,
+                log_rotate_backup_count=2,
+                context_recent_required=0,
+                context_target_chunks=1,
+                context_min_ready=0,
+            )
+            processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_AlwaysOkClient(),  # type: ignore[arg-type]
+                log_fn=lambda _: None,
+            )
+            for seq in range(1, 20):
+                processor.append_transcript(self._chunk(seq, text="x" * 40))
+                processor.append_analysis_prompt_trace({"seq": seq, "text": "y" * 60})
+
+            self.assertTrue((base / "realtime_transcripts.jsonl.1").exists())
+            self.assertTrue((base / "analysis_prompt_trace.jsonl.1").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

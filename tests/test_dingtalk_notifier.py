@@ -245,3 +245,23 @@ class DingTalkNotifierTests(unittest.TestCase):
         self.assertEqual(delays, [1.0, 2.0, 4.0, 8.0])
         self.assertIsNotNone(_DingTalkHandler.last_payload)
         self.assertEqual(_DingTalkHandler.last_payload["msgtype"], "markdown")
+
+    def test_trace_log_rotates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            trace_path = Path(td) / "realtime_dingtalk_trace.jsonl"
+            notifier = DingTalkNotifier(
+                webhook="https://example.test/robot/send?access_token=x",
+                secret="sec-123",
+                send_retry_count=1,
+                trace_path=trace_path,
+                log_rotate_max_bytes=128,
+                log_rotate_backup_count=2,
+                log_fn=lambda _msg: None,
+            )
+            with mock.patch.object(notifier, "_send_payload", return_value=None):
+                for _ in range(20):
+                    notifier._deliver_event(
+                        self._event(chunk_file="chunk_20260101_020304.mp3"),
+                        trace_context={"pre_send_ts_ms": 8000, "pre_send_rel_ms": 600, "stream_t0_ms": 7400},
+                    )
+            self.assertTrue((Path(td) / "realtime_dingtalk_trace.jsonl.1").exists())

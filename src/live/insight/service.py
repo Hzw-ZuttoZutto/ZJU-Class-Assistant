@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from src.common.account import resolve_dashscope_api_key, resolve_openai_client_settings
+from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.audio_streamer import RealtimeAudioFrameReader
 from src.live.insight.audio_chunker import RealtimeAudioChunker
 from src.live.insight.dingtalk import DingTalkNotifier
@@ -73,6 +74,28 @@ class RealtimeInsightService:
         self._text_log_path = self.session_dir / "realtime_insights.log"
         self._transcript_jsonl_path = self.session_dir / "realtime_transcripts.jsonl"
         self._analysis_prompt_trace_path = self.session_dir / "analysis_prompt_trace.jsonl"
+        rotate_max_bytes = max(1, int(getattr(self.config, "log_rotate_max_bytes", 64 * 1024 * 1024)))
+        rotate_backup_count = max(1, int(getattr(self.config, "log_rotate_backup_count", 20)))
+        self._transcript_writer = RotatingLineWriter(
+            path=self._transcript_jsonl_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
+        self._insight_writer = RotatingLineWriter(
+            path=self._insight_jsonl_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
+        self._text_log_writer = RotatingLineWriter(
+            path=self._text_log_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
+        self._analysis_trace_writer = RotatingLineWriter(
+            path=self._analysis_prompt_trace_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
 
     def start(self) -> None:
         if not self.config.enabled:
@@ -564,9 +587,7 @@ class RealtimeInsightService:
     def _append_transcript(self, transcript: TranscriptChunk) -> None:
         payload = transcript.to_json_dict()
         with self._io_lock:
-            with self._transcript_jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            self._transcript_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _load_transcript_chunks(self) -> list[TranscriptChunk]:
         if not self._transcript_jsonl_path.exists():
@@ -620,15 +641,12 @@ class RealtimeInsightService:
     def _append_insight_event(self, event: InsightEvent) -> None:
         payload = event.to_json_dict()
         with self._io_lock:
-            with self._insight_jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
-
-            with self._text_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(f"{event.text_log_level}\n")
-                handle.write(f"具体内容：{event.summary}\n")
-                handle.write(f"具体上下文：{event.context_summary}\n")
-                handle.write("\n")
+            self._insight_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
+            self._text_log_writer.append(
+                f"{event.text_log_level}\n"
+                f"具体内容：{event.summary}\n"
+                f"具体上下文：{event.context_summary}\n\n"
+            )
 
         level = "[ALERT]" if event.urgency_percent >= int(self.config.alert_threshold) else "[INFO]"
         self._log(
@@ -645,9 +663,7 @@ class RealtimeInsightService:
 
     def _append_analysis_prompt_trace(self, payload: dict[str, object]) -> None:
         with self._io_lock:
-            with self._analysis_prompt_trace_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            self._analysis_trace_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _get_or_assign_chunk_seq(self, chunk_name: str) -> int:
         with self._state_lock:

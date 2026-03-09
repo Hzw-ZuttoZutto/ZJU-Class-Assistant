@@ -25,6 +25,7 @@ from typing import Any, Callable
 import requests
 
 from src.common.account import resolve_dashscope_api_key, resolve_dingtalk_bot_settings, resolve_openai_client_settings
+from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.audio_streamer import build_mic_stream_ffmpeg_command
 from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format_local_ts
@@ -141,6 +142,11 @@ class MicChunkProcessor:
         self._next_chunk_seq = 0
         self._profile_path = self.stage_processor.session_dir / "realtime_profile.jsonl"
         self._profile_lock = threading.Lock()
+        self._profile_writer = RotatingLineWriter(
+            path=self._profile_path,
+            max_bytes=max(1, int(getattr(self.stage_processor.config, "log_rotate_max_bytes", 64 * 1024 * 1024))),
+            backup_count=max(1, int(getattr(self.stage_processor.config, "log_rotate_backup_count", 20))),
+        )
         self._chunk_seconds = max(1.0, float(getattr(self.stage_processor.config, "chunk_seconds", 10.0) or 10.0))
 
         self._metrics = {
@@ -344,9 +350,7 @@ class MicChunkProcessor:
             "context_reason": str(payload.get("context_reason", "") or ""),
         }
         with self._profile_lock:
-            with self._profile_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            self._profile_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _run_worker(self) -> None:
         while True:
@@ -1009,6 +1013,8 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         dingtalk_cooldown_sec=max(0.0, float(getattr(args, "rt_dingtalk_cooldown_sec", 30.0))),
         dingtalk_send_timeout_sec=5.0,
         dingtalk_send_retry_count=5,
+        log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
+        log_rotate_backup_count=max(1, int(getattr(args, "rt_log_rotate_backup_count", 20))),
     )
     if pipeline_mode == "stream" and not config.dingtalk_enabled:
         print("[mic-listen] stream mode requires --rt-dingtalk-enabled with valid bot settings")
@@ -1030,6 +1036,8 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             secret=secret,
             cooldown_sec=config.dingtalk_cooldown_sec,
             trace_path=dingtalk_trace_path,
+            log_rotate_max_bytes=config.log_rotate_max_bytes,
+            log_rotate_backup_count=config.log_rotate_backup_count,
             log_fn=print,
         )
     if pipeline_mode == "stream" and notifier is None:
@@ -1266,6 +1274,13 @@ def _read_exact(handle, size: int) -> bytes | None:
 
 
 def _validate_mic_listen_realtime_args(args: argparse.Namespace, *, pipeline_mode: str) -> str:
+    rotate_max_bytes = int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))
+    rotate_backup_count = int(getattr(args, "rt_log_rotate_backup_count", 20))
+    if rotate_max_bytes < 1024 * 1024:
+        return "--rt-log-rotate-max-bytes must be >= 1048576"
+    if rotate_backup_count < 1:
+        return "--rt-log-rotate-backup-count must be >= 1"
+
     if pipeline_mode == "stream":
         asr_model = (getattr(args, "rt_asr_model", None) or "").strip()
         if not asr_model:

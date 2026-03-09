@@ -83,6 +83,40 @@ class _SttTimeoutClient(_FakeClient):
 
 
 class MicPipelineTests(unittest.TestCase):
+    def test_mic_profile_log_rotates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                chunk_seconds=10,
+                stt_model="gpt-4o-mini-transcribe",
+                context_recent_required=0,
+                context_wait_timeout_sec_1=0.0,
+                context_wait_timeout_sec_2=0.0,
+                context_wait_timeout_sec=0.0,
+                context_target_chunks=18,
+                use_dual_context_wait=True,
+                log_rotate_max_bytes=128,
+                log_rotate_backup_count=2,
+            )
+            stage_processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_FakeClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            processor = MicChunkProcessor(
+                stage_processor=stage_processor,
+                chunk_dir=base / "_rt_chunks_mic",
+                max_chunk_bytes=cfg.mic_chunk_max_bytes,
+                profile_enabled=True,
+                log_fn=lambda _msg: None,
+            )
+            for idx in range(20):
+                processor._write_profile({"chunk_seq": idx, "final_status": "ok", "state": "processed", "blob": "x" * 64})
+            self.assertTrue((base / "realtime_profile.jsonl.1").exists())
+
     def test_mic_publisher_ffmpeg_command_contains_dshow(self) -> None:
         cmd = MicPublisher.build_ffmpeg_command(
             ffmpeg_bin="ffmpeg",

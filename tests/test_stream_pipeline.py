@@ -268,6 +268,43 @@ class StreamPipelineTests(unittest.TestCase):
                     log_fn=lambda _msg: None,
                 )
 
+    def test_asr_event_log_rotates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            hotwords = base / "hotwords.json"
+            hotwords.write_text('["签到"]', encoding="utf-8")
+            config = self._build_config(hotwords)
+            config.log_rotate_max_bytes = 128
+            config.log_rotate_backup_count = 2
+            pipeline = StreamRealtimeInsightPipeline(
+                session_dir=base,
+                config=config,
+                keywords=KeywordConfig(),
+                llm_client=_FakeLlmClient(),
+                dashscope_api_key="k",
+                notifier=_FakeNotifier(),  # type: ignore[arg-type]
+                asr_client=_FakeAsrClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            pipeline.start()
+            for seq in range(1, 30):
+                pipeline._on_asr_event(
+                    RealtimeAsrEvent(
+                        global_seq=seq,
+                        provider_sentence_id=str(seq),
+                        ts_local="20260308_120000",
+                        text=f"句子{seq}" + ("x" * 20),
+                        event_type="partial",
+                        is_final=False,
+                        start_ms=seq * 100,
+                        end_ms=seq * 100 + 80,
+                        model="paraformer-realtime-v2",
+                        scene="zh",
+                    )
+                )
+            pipeline.stop()
+            self.assertTrue((base / "realtime_asr_events.jsonl.1").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

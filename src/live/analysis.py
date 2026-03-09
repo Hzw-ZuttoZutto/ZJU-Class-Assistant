@@ -126,6 +126,9 @@ def run_analysis(args: argparse.Namespace) -> int:
                 course_title=course_meta.title,
                 teacher_name=course_meta.primary_teacher,
             ),
+            trace_path=session_dir / "realtime_dingtalk_trace.jsonl",
+            log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
+            log_rotate_backup_count=max(1, int(getattr(args, "rt_log_rotate_backup_count", 20))),
             log_fn=print,
         )
 
@@ -165,6 +168,8 @@ def run_analysis(args: argparse.Namespace) -> int:
         dingtalk_cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
         dingtalk_send_timeout_sec=5.0,
         dingtalk_send_retry_count=5,
+        log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
+        log_rotate_backup_count=max(1, int(getattr(args, "rt_log_rotate_backup_count", 20))),
         max_concurrency=1,
         context_min_ready=0,
         context_recent_required=max(0, int(args.rt_context_recent_required)),
@@ -229,6 +234,12 @@ def _validate_analysis_args(args: argparse.Namespace) -> str:
         _ = load_hotwords(hotwords_file, log_fn=lambda _msg: None)
     except ValueError as exc:
         return str(exc)
+    rotate_max_bytes = int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))
+    rotate_backup_count = int(getattr(args, "rt_log_rotate_backup_count", 20))
+    if rotate_max_bytes < 1024 * 1024:
+        return "--rt-log-rotate-max-bytes must be >= 1048576"
+    if rotate_backup_count < 1:
+        return "--rt-log-rotate-backup-count must be >= 1"
     return ""
 
 

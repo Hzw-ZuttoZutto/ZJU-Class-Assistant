@@ -184,6 +184,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Timeout seconds while waiting recent context to become ready",
     )
+    analysis.add_argument(
+        "--rt-log-rotate-max-bytes",
+        type=int,
+        default=64 * 1024 * 1024,
+        help="Per-file max bytes before rotating realtime logs",
+    )
+    analysis.add_argument(
+        "--rt-log-rotate-backup-count",
+        type=int,
+        default=20,
+        help="Number of rotated realtime log files to retain",
+    )
 
     mic_listen = subparsers.add_parser(
         "mic-listen",
@@ -387,6 +399,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--rt-profile-enabled",
         action="store_true",
         help="Enable per-chunk realtime profile logging to separate JSONL output",
+    )
+    mic_listen.add_argument(
+        "--rt-log-rotate-max-bytes",
+        type=int,
+        default=64 * 1024 * 1024,
+        help="Per-file max bytes before rotating realtime logs",
+    )
+    mic_listen.add_argument(
+        "--rt-log-rotate-backup-count",
+        type=int,
+        default=20,
+        help="Number of rotated realtime log files to retain",
     )
 
     mic_publish = subparsers.add_parser(

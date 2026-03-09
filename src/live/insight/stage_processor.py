@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.models import (
     InsightEvent,
     KeywordConfig,
@@ -57,6 +58,28 @@ class InsightStageProcessor:
         self._text_log_path = self.session_dir / "realtime_insights.log"
         self._transcript_jsonl_path = self.session_dir / "realtime_transcripts.jsonl"
         self._analysis_prompt_trace_path = self.session_dir / "analysis_prompt_trace.jsonl"
+        rotate_max_bytes = max(1, int(getattr(self.config, "log_rotate_max_bytes", 64 * 1024 * 1024)))
+        rotate_backup_count = max(1, int(getattr(self.config, "log_rotate_backup_count", 20)))
+        self._transcript_writer = RotatingLineWriter(
+            path=self._transcript_jsonl_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
+        self._insight_writer = RotatingLineWriter(
+            path=self._insight_jsonl_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
+        self._text_log_writer = RotatingLineWriter(
+            path=self._text_log_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
+        self._analysis_trace_writer = RotatingLineWriter(
+            path=self._analysis_prompt_trace_path,
+            max_bytes=rotate_max_bytes,
+            backup_count=rotate_backup_count,
+        )
 
     def process_chunk(self, chunk_seq: int, chunk_path: Path, profile: dict[str, Any] | None = None) -> None:
         if profile is not None:
@@ -657,9 +680,7 @@ class InsightStageProcessor:
     def append_transcript(self, transcript: TranscriptChunk) -> None:
         payload = transcript.to_json_dict()
         with self._io_lock:
-            with self._transcript_jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            self._transcript_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
         self._append_history_window(transcript)
 
     def load_transcript_chunks(self) -> list[TranscriptChunk]:
@@ -777,15 +798,12 @@ class InsightStageProcessor:
     def append_insight_event(self, event: InsightEvent, profile: dict[str, Any] | None = None) -> None:
         payload = event.to_json_dict()
         with self._io_lock:
-            with self._insight_jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
-
-            with self._text_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(f"{event.text_log_level}\n")
-                handle.write(f"具体内容：{event.summary}\n")
-                handle.write(f"具体上下文：{event.context_summary}\n")
-                handle.write("\n")
+            self._insight_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
+            self._text_log_writer.append(
+                f"{event.text_log_level}\n"
+                f"具体内容：{event.summary}\n"
+                f"具体上下文：{event.context_summary}\n\n"
+            )
 
         if profile is not None:
             profile["insight_logged_ts_ms"] = _now_epoch_ms()
@@ -801,9 +819,7 @@ class InsightStageProcessor:
 
     def append_analysis_prompt_trace(self, payload: dict[str, Any]) -> None:
         with self._io_lock:
-            with self._analysis_prompt_trace_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            self._analysis_trace_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _normalize_event_type(result: InsightModelResult) -> str:

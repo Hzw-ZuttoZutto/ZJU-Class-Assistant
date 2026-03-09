@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import InsightEvent, KeywordConfig, RealtimeInsightConfig
 from src.live.insight.openai_client import OpenAIInsightClient
@@ -86,6 +87,11 @@ class StreamRealtimeInsightPipeline:
             stream_t0_provider=self.get_stream_t0_ms,
         )
         self._asr_events_path = self.session_dir / "realtime_asr_events.jsonl"
+        self._asr_events_writer = RotatingLineWriter(
+            path=self._asr_events_path,
+            max_bytes=max(1, int(getattr(self.config, "log_rotate_max_bytes", 64 * 1024 * 1024))),
+            backup_count=max(1, int(getattr(self.config, "log_rotate_backup_count", 20))),
+        )
 
         model = (self.config.asr_model or "").strip()
         if not model:
@@ -143,9 +149,7 @@ class StreamRealtimeInsightPipeline:
     def _on_asr_event(self, event: RealtimeAsrEvent) -> None:
         payload = event.to_json_dict()
         with self._io_lock:
-            with self._asr_events_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False))
-                handle.write("\n")
+            self._asr_events_writer.append(json.dumps(payload, ensure_ascii=False) + "\n")
         if not event.is_final:
             return
 

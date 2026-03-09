@@ -32,6 +32,8 @@ class MicCliTests(unittest.TestCase):
         self.assertFalse(args.rt_dingtalk_enabled)
         self.assertEqual(args.rt_dingtalk_cooldown_sec, 30.0)
         self.assertFalse(args.rt_profile_enabled)
+        self.assertEqual(args.rt_log_rotate_max_bytes, 64 * 1024 * 1024)
+        self.assertEqual(args.rt_log_rotate_backup_count, 20)
 
     def test_mic_publish_args(self) -> None:
         parser = build_parser()
@@ -83,10 +85,21 @@ class MicCliTests(unittest.TestCase):
     def test_mic_listen_dingtalk_flag(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
-            ["mic-listen", "--rt-dingtalk-enabled", "--rt-dingtalk-cooldown-sec", "45"]
+            [
+                "mic-listen",
+                "--rt-dingtalk-enabled",
+                "--rt-dingtalk-cooldown-sec",
+                "45",
+                "--rt-log-rotate-max-bytes",
+                "1048576",
+                "--rt-log-rotate-backup-count",
+                "6",
+            ]
         )
         self.assertTrue(args.rt_dingtalk_enabled)
         self.assertEqual(args.rt_dingtalk_cooldown_sec, 45.0)
+        self.assertEqual(args.rt_log_rotate_max_bytes, 1048576)
+        self.assertEqual(args.rt_log_rotate_backup_count, 6)
 
     def test_mic_list_devices_args(self) -> None:
         parser = build_parser()
