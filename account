@@ -2,11 +2,11 @@
 # 用法：cp account .account
 # 说明：键名大小写不敏感，等号右侧直接填值，不要加引号
 
-# [scan/watch 必填] 浙大统一认证账号密码
+# [scan/analysis 必填] 浙大统一认证账号密码
 USERNAME=your_zju_username
 PASSWORD=your_zju_password
 
-# [watch/mic-listen 实时分析必填，二选一]
+# [analysis/mic-listen 实时分析必填，二选一]
 # OpenAI 官方 Key
 OPENAI_API_KEY=your_openai_api_key
 # 或 AIHubMix 网关 Key

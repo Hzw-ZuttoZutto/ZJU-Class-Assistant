@@ -1,1 +1,1 @@
-"""Live watch service modules."""
+"""Live service modules."""

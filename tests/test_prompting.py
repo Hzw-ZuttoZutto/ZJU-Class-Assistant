@@ -18,6 +18,11 @@ class PromptingTests(unittest.TestCase):
         self.assertIn("当前17.5秒文本", prompt)
         self.assertNotIn("当前10秒文本", prompt)
 
+    def test_build_system_prompt_uses_segment_text_when_seconds_missing(self) -> None:
+        prompt = build_system_prompt(0.0)
+        self.assertIn("当前文本段", prompt)
+        self.assertNotIn("当前0.1秒文本", prompt)
+
     def test_build_user_prompt_contains_strong_context_boundaries(self) -> None:
         prompt = build_user_prompt(
             keywords=KeywordConfig(),
@@ -29,6 +34,16 @@ class PromptingTests(unittest.TestCase):
         self.assertIn("当前待判定区", prompt)
         self.assertIn("最终 important 只能由本区决定", prompt)
         self.assertIn("17.5 秒", prompt)
+
+    def test_build_user_prompt_omits_seconds_when_disabled(self) -> None:
+        prompt = build_user_prompt(
+            keywords=KeywordConfig(),
+            current_text="现在开始签到",
+            context_text="无历史文本块",
+            chunk_seconds=0.0,
+        )
+        self.assertIn("当前待判定区", prompt)
+        self.assertNotIn("0.1 秒", prompt)
 
     def test_build_history_context_block_wraps_empty_and_raw_history(self) -> None:
         empty = build_history_context_block("")

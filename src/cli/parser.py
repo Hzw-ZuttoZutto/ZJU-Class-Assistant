@@ -22,7 +22,7 @@ def add_common_auth_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="ZJU classroom tool: scan courses or watch live teacher/ppt streams"
+        description="ZJU classroom tool: scan courses or run live stream analysis"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -53,247 +53,132 @@ def build_parser() -> argparse.ArgumentParser:
         help="Retry interval seconds for live-state detection",
     )
 
-    watch = subparsers.add_parser(
-        "watch",
-        help="Continuously discover live streams (meta + livingroom architectures) and play teacher/ppt",
+    analysis = subparsers.add_parser(
+        "analysis",
+        help="Continuously discover live streams and run stream realtime analysis",
     )
-    add_common_auth_args(watch)
-    watch.add_argument("--course-id", type=int, required=True, help="Course ID")
-    watch.add_argument("--sub-id", type=int, required=True, help="Sub ID")
-    watch.add_argument("--poll-interval", type=float, default=10.0, help="Backend poll interval seconds")
-    watch.add_argument("--host", default="127.0.0.1", help="Local server host")
-    watch.add_argument("--port", type=int, default=8765, help="Local server port")
-    watch.add_argument(
-        "--open-base-url",
+    add_common_auth_args(analysis)
+    analysis.add_argument("--course-id", type=int, required=True, help="Course ID")
+    analysis.add_argument("--sub-id", type=int, required=True, help="Sub ID")
+    analysis.add_argument("--poll-interval", type=float, default=10.0, help="Backend poll interval seconds")
+    analysis.add_argument(
+        "--output-dir",
         default="",
-        help="URL used for auto-open in browser (for SSH port-forward/local mapping)",
+        help="Parent directory used for analysis session output",
     )
-    watch.add_argument("--no-browser", action="store_true", help="Do not auto-open browser windows")
-
-    watch.add_argument(
-        "--playlist-retries",
-        type=int,
-        default=3,
-        help="Retries for upstream m3u8 fetch failures",
-    )
-    watch.add_argument(
-        "--asset-retries",
-        type=int,
-        default=3,
-        help="Retries for upstream segment/key fetch failures",
-    )
-    watch.add_argument(
-        "--stale-playlist-grace",
-        type=float,
-        default=15.0,
-        help="Serve cached playlist for this many seconds after upstream failure",
-    )
-    watch.add_argument(
-        "--hls-max-buffer",
-        type=int,
-        default=20,
-        help="HLS maxBufferLength value used by browser player",
-    )
-    watch.add_argument(
-        "--record-dir",
-        default="",
-        help="Parent directory used for recording session output",
-    )
-    watch.add_argument(
-        "--record-segment-minutes",
-        type=int,
-        default=10,
-        help="Segment duration in minutes; 0 means no split until manual stop",
-    )
-    watch.add_argument(
-        "--record-startup-av-timeout",
-        type=float,
-        default=15.0,
-        help="Fail watch if teacher AV stream is unavailable for this many seconds on startup",
-    )
-    watch.add_argument(
-        "--record-recovery-window-sec",
-        type=float,
-        default=10.0,
-        help="Gap recovery window before marking missing interval",
-    )
-    watch.add_argument(
-        "--rt-insight-enabled",
-        action="store_true",
-        help="Enable realtime key information extraction from teacher audio",
-    )
-    watch.add_argument(
-        "--rt-pipeline-mode",
-        choices=["chunk", "stream"],
-        default="chunk",
-        help="Realtime insight pipeline mode: chunk(legacy) or stream(new)",
-    )
-    watch.add_argument(
-        "--rt-chunk-seconds",
-        type=int,
-        default=10,
-        help="Audio chunk duration in seconds for realtime insight",
-    )
-    watch.add_argument(
-        "--rt-context-window-seconds",
-        type=int,
-        default=180,
-        help="Historical summary context window in seconds for realtime insight",
-    )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-model",
         default="gpt-4.1-mini",
         help="OpenAI text model for realtime insight analysis",
     )
-    watch.add_argument(
-        "--rt-stt-model",
-        default=None,
-        help="OpenAI speech-to-text model for realtime insight",
-    )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-asr-scene",
         choices=["zh", "multi"],
         default="zh",
-        help="Streaming ASR scene profile used by --rt-pipeline-mode=stream",
+        help="Streaming ASR scene profile used by analysis mode",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-asr-model",
         default=None,
-        help="Streaming ASR model (required when --rt-pipeline-mode=stream and --rt-insight-enabled)",
+        help="Streaming ASR model (required in analysis mode)",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-hotwords-file",
         default="config/realtime_hotwords.json",
         help="Hotwords JSON array file path for stream mode ASR",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-window-sentences",
         type=int,
         default=8,
         help="Sliding window sentence count for stream mode",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-stream-analysis-workers",
         type=int,
         default=32,
         help="Parallel analysis workers for stream mode",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-stream-queue-size",
         type=int,
         default=100,
         help="Pending analysis queue size for stream mode",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-asr-endpoint",
         default="wss://dashscope.aliyuncs.com/api-ws/v1/inference",
         help="DashScope websocket endpoint for stream mode ASR",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-translation-target-languages",
         default="zh",
         help="Comma-separated translation targets used by multi-scene stream ASR",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-keywords-file",
         default="config/realtime_keywords.json",
         help="Keyword configuration file path for realtime insight",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-api-base-url",
         default="",
         help="Optional OpenAI-compatible API base URL (e.g. https://aihubmix.com/v1)",
     )
-    watch.add_argument(
-        "--rt-stt-request-timeout-sec",
-        type=float,
-        default=8.0,
-        help="Per-request timeout seconds for realtime STT stage",
-    )
-    watch.add_argument(
-        "--rt-stt-stage-timeout-sec",
-        type=float,
-        default=32.0,
-        help="Stage timeout seconds for realtime STT retries",
-    )
-    watch.add_argument(
-        "--rt-stt-retry-count",
-        type=int,
-        default=4,
-        help="Total attempts allowed for realtime STT stage",
-    )
-    watch.add_argument(
-        "--rt-stt-retry-interval-sec",
-        type=float,
-        default=0.2,
-        help="Wait seconds before STT retry after each failed attempt",
-    )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-analysis-request-timeout-sec",
         type=float,
         default=15.0,
         help="Per-request timeout seconds for realtime analysis stage",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-analysis-stage-timeout-sec",
         type=float,
         default=60.0,
         help="Stage timeout seconds for realtime analysis retries",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-analysis-retry-count",
         type=int,
         default=4,
         help="Total attempts allowed for realtime analysis stage",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-analysis-retry-interval-sec",
         type=float,
         default=0.2,
         help="Wait seconds before analysis retry after each failed attempt",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-alert-threshold",
         type=int,
         default=90,
         help="Urgency threshold for [ALERT] console output",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-dingtalk-enabled",
         action="store_true",
         help="Enable DingTalk bot alerts for important realtime insights",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-dingtalk-cooldown-sec",
         type=float,
         default=30.0,
         help="Cooldown seconds after an accepted DingTalk alert",
     )
-    watch.add_argument(
-        "--rt-max-concurrency",
-        type=int,
-        default=5,
-        help="Maximum concurrent async workers for realtime insight pipeline",
-    )
-    watch.add_argument(
-        "--rt-context-min-ready",
-        type=int,
-        default=15,
-        help="Minimum ready transcript chunks before strict context gate is considered met",
-    )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-context-recent-required",
         type=int,
         default=4,
         help="Required most-recent transcript chunks that must be present for context gate",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-context-wait-timeout-sec-1",
         type=float,
         default=1.0,
         help="After recent context is ready, extra wait seconds for full target context",
     )
-    watch.add_argument(
+    analysis.add_argument(
         "--rt-context-wait-timeout-sec-2",
         type=float,
         default=5.0,

@@ -8,8 +8,13 @@ CURRENT_CHUNK_FOOTER = "========== 当前待判定区结束 =========="
 NO_HISTORY_CONTEXT_LINE = "[no_history] 无历史文本块"
 
 
-def format_chunk_seconds(chunk_seconds: float) -> str:
-    value = max(0.1, float(chunk_seconds))
+def format_chunk_seconds(chunk_seconds: float | None) -> str:
+    if chunk_seconds is None:
+        return ""
+    value = float(chunk_seconds)
+    if value <= 0:
+        return ""
+    value = max(0.1, value)
     rounded = f"{value:.3f}".rstrip("0").rstrip(".")
     return rounded or "0.1"
 
@@ -27,27 +32,31 @@ def build_history_context_block(context_text: str) -> str:
     )
 
 
-def build_current_chunk_block(*, current_text: str, chunk_seconds: float) -> str:
+def build_current_chunk_block(*, current_text: str, chunk_seconds: float | None) -> str:
     chunk_seconds_text = format_chunk_seconds(chunk_seconds)
-    header = (
-        "========== 当前待判定区"
-        f"（唯一主判定对象，本块时长约 {chunk_seconds_text} 秒；最终 important 只能由本区决定） =========="
-    )
+    if chunk_seconds_text:
+        header = (
+            "========== 当前待判定区"
+            f"（唯一主判定对象，本块时长约 {chunk_seconds_text} 秒；最终 important 只能由本区决定） =========="
+        )
+    else:
+        header = "========== 当前待判定区（唯一主判定对象；最终 important 只能由本区决定） =========="
     body = str(current_text or "").strip() or "[empty_current_chunk] （当前块为空）"
     return "\n".join([header, body, CURRENT_CHUNK_FOOTER])
 
 
-def build_system_prompt(chunk_seconds: float) -> str:
+def build_system_prompt(chunk_seconds: float | None) -> str:
     chunk_seconds_text = format_chunk_seconds(chunk_seconds)
+    current_segment_ref = f"当前{chunk_seconds_text}秒文本" if chunk_seconds_text else "当前文本段"
     return (
         "你是课堂实时紧急事项提炼助手。"
-        f"任务是基于“当前{chunk_seconds_text}秒文本”和“最近历史上下文”，判断当前是否出现需要学生立即关注的课堂事项，"
+        f"任务是基于“{current_segment_ref}”和“最近历史上下文”，判断当前是否出现需要学生立即关注的课堂事项，"
         "并把结果整理成适合告警阅读的动作化 JSON。"
         "输出必须是严格 JSON 对象，不得输出任何额外文本。"
         "JSON 必须包含字段："
         "important(boolean), summary(string), context_summary(string), matched_terms(string array), "
         "reason(string), event_type(string), headline(string), immediate_action(string), key_details(string array)。"
-        f"判定时必须以“当前{chunk_seconds_text}秒文本”为唯一主判定对象；"
+        f"判定时必须以“{current_segment_ref}”为唯一主判定对象；"
         "历史上下文只允许用于消歧、识别是否为同一事项的延续，以及补足紧邻上下文中的细节。"
         "关键词规则分为事件分组、别名、典型短语、延续细节线索和负向词。"
         "这些规则只是提示，不是硬触发器；不能因为命中了某个词就机械判定 important=true。"
@@ -78,7 +87,7 @@ def build_user_prompt(
     keywords: KeywordConfig,
     current_text: str,
     context_text: str,
-    chunk_seconds: float,
+    chunk_seconds: float | None,
 ) -> str:
     history_block = build_history_context_block(context_text)
     current_block = build_current_chunk_block(current_text=current_text, chunk_seconds=chunk_seconds)
