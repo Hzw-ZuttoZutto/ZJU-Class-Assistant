@@ -110,8 +110,8 @@ python -m src.main scan \
 
 ```bash
 python -m src.main watch \
-  --course-id 83650 \
-  --sub-id 1895397 \
+  --course-id 81975 \
+  --sub-id 1896537 \
   --poll-interval 3 \
   --port 8765 \
   --record-dir ./records \
@@ -150,7 +150,44 @@ python -m src.main watch \
 - `http://127.0.0.1:8765/player?role=teacher`
 - `http://127.0.0.1:8765/player?role=ppt`
 
-### 4.3 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
+### 4.3 `watch` + 录制 + stream 实时分析（实践默认）
+
+```bash
+python -m src.main watch \
+  --course-id 81975 \
+  --sub-id 1896537 \
+  --poll-interval 3 \
+  --port 8765 \
+  --record-dir ./records \
+  --record-segment-minutes 10 \
+  --record-startup-av-timeout 15 \
+  --record-recovery-window-sec 10 \
+  --rt-insight-enabled \
+  --rt-pipeline-mode stream \
+  --rt-asr-scene zh \
+  --rt-asr-model fun-asr-realtime \
+  --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-window-sentences 8 \
+  --rt-stream-analysis-workers 32 \
+  --rt-stream-queue-size 100 \
+  --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
+  --rt-model gpt-4.1-mini \
+  --rt-api-base-url https://aihubmix.com/v1 \
+  --rt-keywords-file config/realtime_keywords.json \
+  --rt-analysis-request-timeout-sec 15 \
+  --rt-analysis-stage-timeout-sec 60 \
+  --rt-analysis-retry-count 4 \
+  --rt-analysis-retry-interval-sec 0.2 \
+  --rt-alert-threshold 90 \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
+  --rt-context-recent-required 4 \
+  --rt-context-wait-timeout-sec-1 1 \
+  --rt-context-wait-timeout-sec-2 5 \
+  --no-browser
+```
+
+### 4.4 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
 
 1. 服务端启动：
 
