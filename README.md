@@ -375,25 +375,27 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 - `realtime_profile.jsonl`（启用 `--rt-profile-enabled` 时）
 - 以上 realtime 日志同样启用按大小轮转（命名规则与 `analysis` 一致）。
 
-## 7. 自定义关键词与热词
+## 7. 自定义关键词、热词与系统提示词
 
 这一节用于按你的业务需求，修改：
 
 - `config/realtime_keywords.json`：自定义实时分析规则（等价于“规则化 prompt 配置”）与紧急关键词。
 - `config/realtime_hotwords.json`：自定义 stream ASR 的转写/翻译热词。
+- `config/realtime_system_prompt.txt`：自定义实时分析系统提示词模板。
 
-### 7.1 两个配置分别影响什么
+### 7.1 三个配置分别影响什么
 
 | 文件 | 生效范围 | 作用 |
 |---|---|---|
 | `config/realtime_keywords.json` | `analysis`、`mic-listen`（chunk/stream 都会用） | 注入分析规则，影响 `important` 判定、`event_type` 与告警内容 |
 | `config/realtime_hotwords.json` | `analysis`、`mic-listen --rt-pipeline-mode stream` | 传给 DashScope 实时 ASR，提升指定词的识别/翻译命中率 |
+| `config/realtime_system_prompt.txt` | `analysis`、`mic-listen`（chunk/stream 都会用） | 实时分析系统提示词模板，统一约束 JSON 输出与判定逻辑 |
 
 注意：
 
 - 修改任一配置后，都需要重启 `analysis` 或 `mic-listen` 才会生效。
-- `realtime_keywords.json` 配的是“规则内容”（会进入分析提示词）；系统模板文案在代码中固定。
-- 若要直接改系统模板文案，请修改 `src/live/insight/prompting.py` 中的 `build_system_prompt`。
+- `realtime_keywords.json` 配的是“规则内容”（会进入分析提示词）。
+- `realtime_system_prompt.txt` 配的是系统提示词模板，支持占位符 `{{CURRENT_SEGMENT_REF}}`（运行时会替换成“当前17.5秒文本”或“当前文本段”这类描述）。
 
 ### 7.2 自定义 `realtime_keywords.json`（紧急关键词 + 规则 prompt）
 

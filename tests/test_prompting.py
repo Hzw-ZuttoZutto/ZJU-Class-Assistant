@@ -23,6 +23,10 @@ class PromptingTests(unittest.TestCase):
         self.assertIn("当前文本段", prompt)
         self.assertNotIn("当前0.1秒文本", prompt)
 
+    def test_build_system_prompt_replaces_template_placeholder(self) -> None:
+        prompt = build_system_prompt(17.5, template="主判定对象={{CURRENT_SEGMENT_REF}}")
+        self.assertEqual(prompt, "主判定对象=当前17.5秒文本")
+
     def test_build_user_prompt_contains_strong_context_boundaries(self) -> None:
         prompt = build_user_prompt(
             keywords=KeywordConfig(),
