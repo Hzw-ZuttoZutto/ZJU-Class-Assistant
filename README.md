@@ -28,12 +28,13 @@ python -m src.main <subcommand> ...
 - `mic-listen` + `mic-publish`：独立麦克风采集链路（不依赖 analysis）。
 - `mic-list-devices`：列出本机可用麦克风设备。
 
-## 2. 快速开始
+## 2. 配置环境, 密码
 
 1. 安装依赖：
 
 ```bash
 conda create -n fuckclass python=3.9
+conda activate fuckclass
 pip install -r requirements.txt
 sudo apt update && sudo apt install -y ffmpeg
 ```
@@ -44,11 +45,6 @@ sudo apt update && sudo apt install -y ffmpeg
 cp account .account
 ```
 
-3. 直接运行（示例：扫描课程）：
-
-```bash
-python -m src.main scan --teacher '王强' --title '编译原理'
-```
 
 ## 3. `.account` 填写说明
 
@@ -81,19 +77,7 @@ python -m src.main scan --teacher '王强' --title '编译原理'
 ## 4. 实践默认参数配置（可直接复制）
 
 ### 4.1 课程扫描（默认）
-
-```bash
-python -m src.main scan \
-  --teacher '王强' \
-  --title '编译原理' \
-  --center 83650 \
-  --radius 100 \
-  --workers 64 \
-  --retries 1 \
-  --verbose
-```
-
-仅保留“直播中”课程：
+此脚本用于帮助你快速（并不快）基于课程名称，开课老师确定正在直播的课程course_id 和sub_id
 
 ```bash
 python -m src.main scan \
@@ -109,10 +93,12 @@ python -m src.main scan \
 
 ### 4.2 `analysis` + stream 实时分析（实践默认）
 
+
+
 ```bash
 python -m src.main analysis \
-  --course-id 81975 \
-  --sub-id 1896537 \
+  --course-id <使用上面搜到的课程id> \
+  --sub-id <使用上面搜到的sub_id> \
   --poll-interval 3 \
   --output-dir ./records \
   --rt-model gpt-4.1-mini \
@@ -192,9 +178,6 @@ python -m src.main mic-publish
   --retry-base-sec 1.0 \
   --retry-max-sec 12.0
 
-
-# 举例
-python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token "micstream001" --device "麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)" --rt-pipeline-mode stream --stream-frame-duration-ms 120 --request-timeout-sec 20 --retry-base-sec 1.0 --retry-max-sec 12.0
 ```
 
 ## 5. 参数说明（按功能块）
