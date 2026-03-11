@@ -78,6 +78,12 @@ cp account .account
 | `DASHSCOPE_API_KEY` | stream 模式必填 | `analysis` / `mic-listen(stream)` | DashScope 实时 ASR Key |
 | `DINGTALK_WEBHOOK` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人 Webhook |
 | `DINGTALK_SECRET` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人签名 Secret |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | 阿里云访问密钥 ID（标准键名，严格要求） |
+| `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | 阿里云访问密钥 Secret（标准键名，严格要求） |
+| `TINGWU_APP_KEY` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | 通义听悟项目 AppKey（不是 `DASHSCOPE_API_KEY`） |
+| `TINGWU_OSS_BUCKET` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | OSS Bucket 名称 |
+| `TINGWU_OSS_REGION` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | OSS 地域（如 `cn-beijing`） |
+| `TINGWU_OSS_ENDPOINT` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | OSS Endpoint（如 `oss-cn-beijing.aliyuncs.com`） |
 
 ### 3.2 优先级规则
 
@@ -86,6 +92,7 @@ cp account .account
 - Base URL：`.account` > 环境变量。
 - DashScope Key：`.account` > 环境变量。
 - DingTalk 机器人：`.account` > 环境变量。
+- Tingwu/OSS 凭据：`.account` > 环境变量（仅支持标准键名，不兼容 `ACCESS_KEY_ID/ACCESS_KEY_SECRET`）。
 - 仅配置 `AIHUBMIX_API_KEY` 且未设置 Base URL 时，默认使用 `https://aihubmix.com/v1`。
 
 ## 4. 实践默认参数配置（可直接复制）
@@ -134,8 +141,13 @@ python -m src.main analysis \
   --rt-dingtalk-cooldown-sec 30 \
   --rt-context-recent-required 4 \
   --rt-context-wait-timeout-sec-1 1 \
-  --rt-context-wait-timeout-sec-2 5
+  --rt-context-wait-timeout-sec-2 5 \
+  --tingwu-enabled \
+  --tingwu-poll-interval-sec 30 \
+  --tingwu-max-wait-hours 6
 ```
+
+`--tingwu-enabled` 打开后会额外启动课程整段音频录制；`analysis` 退出后会异步拉起 `tingwu-process` 子进程执行 OSS 上传与听悟任务，主链路不会等待该子进程完成。
 
 ### 4.3 `auto-analysis`（全自动外壳）
 
@@ -181,7 +193,10 @@ python -m src.main auto-analysis --config config/auto_analysis.json
     "rt_stream_queue_size": 100,
     "rt_asr_endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
     "rt_keywords_file": "config/realtime_keywords.json",
-    "rt_dingtalk_enabled": true
+    "rt_dingtalk_enabled": true,
+    "tingwu_enabled": false,
+    "tingwu_poll_interval_sec": 30,
+    "tingwu_max_wait_hours": 6
   },
   "courses": [
     {
@@ -203,6 +218,7 @@ python -m src.main auto-analysis --config config/auto_analysis.json
 - 任一课程校验失败会整体阻断启动（fail-fast）。
 - `scan` 区块仅做兼容保留，不再参与 `course_id` 映射推断。
 - `analysis_args` 为统一全局参数，不能包含 `course_id/sub_id`（由外壳运行时自动注入）。
+- 当 `analysis_args.tingwu_enabled=true` 时，`auto-analysis` 启动前会做听悟远端预检（鉴权探测 + OSS 上传/签名读/删除探针），任一步失败即启动失败。
 
 ### 4.4 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
 
@@ -333,6 +349,9 @@ python -m src.main mic-publish
 | `--rt-context-wait-timeout-sec-2` | `5.0` | 等待最近片段齐备的最大时长 |
 | `--rt-log-rotate-max-bytes` | `67108864` | 单个 realtime 日志文件轮转阈值（字节） |
 | `--rt-log-rotate-backup-count` | `20` | 每个 realtime 日志最多保留历史份数 |
+| `--tingwu-enabled` | 关闭 | 开启课后听悟链路（整段音频录制 + 异步 worker） |
+| `--tingwu-poll-interval-sec` | `30.0` | 听悟任务轮询间隔（秒） |
+| `--tingwu-max-wait-hours` | `6.0` | 听悟任务最长等待时长（小时） |
 
 补充约束：
 
@@ -340,6 +359,7 @@ python -m src.main mic-publish
 - `--rt-hotwords-file` 必须是可读的 JSON 数组文件（`[]` 合法）。
 - `analysis` 模式必须显式传 `--rt-dingtalk-enabled`，并且机器人配置（`DINGTALK_WEBHOOK` / `DINGTALK_SECRET`）必须可用。
 - `--rt-dingtalk-queue-size` 必须 `>= 1`。
+- 开启 `--tingwu-enabled` 时，必须提供标准键名 `ALIBABA_CLOUD_ACCESS_KEY_*`、`TINGWU_APP_KEY`、`TINGWU_OSS_*`，且本机需有 `ffmpeg/ffprobe`。
 
 ### 5.5 `auto-analysis` 参数
 
@@ -407,7 +427,13 @@ python -m src.main mic-publish
 - 日志轮转参数约束：`--rt-log-rotate-max-bytes >= 1048576`，`--rt-log-rotate-backup-count >= 1`。
 - 钉钉队列参数约束：`--rt-dingtalk-queue-size >= 1`。
 
-### 5.8 `mic-publish` 参数
+### 5.8 `tingwu-process` 参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--job-file` | 必填 | `analysis` 生成的 `tingwu_job.json` 路径；可用于手工重跑听悟后处理 |
+
+### 5.9 `mic-publish` 参数
 
 | 参数 | 默认值 | 适用模式 | 含义 |
 |---|---|---|---|
@@ -425,7 +451,7 @@ python -m src.main mic-publish
 | `--retry-max-sec` | `8.0` | 全部 | 重试最大退避 |
 | `--scan-interval-sec` | `0.2` | chunk | 本地切片扫描周期 |
 
-### 5.9 `mic-list-devices` 参数
+### 5.10 `mic-list-devices` 参数
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
@@ -443,6 +469,13 @@ python -m src.main mic-publish
 - `realtime_runtime_heartbeat.jsonl`：运行态心跳（默认 10s 一条，含线程状态/计数器快照）。
 - `realtime_runtime_events.jsonl`：运行态故障与恢复事件（P0/P1 判级）。
 - `realtime_runtime_dingtalk_trace.jsonl`：运行态分级告警发送跟踪（有运行态告警时写入）。
+- `tingwu_audio_full.mp3`：`--tingwu-enabled` 时生成的课程整段音频。
+- `tingwu_audio_recording_report.json`：听悟录音分段/合并报告。
+- `tingwu_job.json`：异步 worker 任务描述文件。
+- `tingwu_process.log`：听悟 worker 日志。
+- `tingwu_process_error.json`：听悟 worker 失败详情（失败时生成）。
+- `tingwu_summary.md`：听悟 JSON 渲染后的本地 Markdown 汇总。
+- `tingwu_results/*.json`：听悟原始能力 JSON 结果。
 - 以上 realtime 日志默认启用按大小轮转：主文件达到 `--rt-log-rotate-max-bytes` 后滚动为 `.1/.2/...`，最多保留 `--rt-log-rotate-backup-count` 份历史。
 
 ### 6.2 `mic-listen` 会话目录

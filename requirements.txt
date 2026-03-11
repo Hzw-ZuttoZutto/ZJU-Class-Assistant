@@ -3,3 +3,6 @@ requests>=2.31.0
 dashscope>=1.23.0
 websocket-client>=1.8.0
 websockets>=13.0
+oss2>=2.18.6
+alibabacloud-tea-openapi>=0.3.16
+alibabacloud-tea-util>=0.3.13

@@ -11,6 +11,7 @@ from src.common.account import (
     resolve_dingtalk_bot_settings,
     resolve_openai_api_key,
     resolve_openai_client_settings,
+    resolve_tingwu_settings,
 )
 
 
@@ -146,6 +147,63 @@ class AccountCredentialTests(unittest.TestCase):
         self.assertEqual(webhook, "https://env.test/hook")
         self.assertEqual(secret, "env-sec")
         self.assertEqual(err, "")
+
+    def test_resolve_tingwu_settings_from_account_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ALIBABA_CLOUD_ACCESS_KEY_ID=ak",
+                        "ALIBABA_CLOUD_ACCESS_KEY_SECRET=sk",
+                        "TINGWU_APP_KEY=app",
+                        "TINGWU_OSS_BUCKET=bucket",
+                        "TINGWU_OSS_REGION=cn-beijing",
+                        "TINGWU_OSS_ENDPOINT=https://oss-cn-beijing.aliyuncs.com/",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                settings, err = resolve_tingwu_settings()
+        self.assertEqual(err, "")
+        assert settings is not None
+        self.assertEqual(settings.access_key_id, "ak")
+        self.assertEqual(settings.access_key_secret, "sk")
+        self.assertEqual(settings.app_key, "app")
+        self.assertEqual(settings.oss_bucket, "bucket")
+        self.assertEqual(settings.oss_region, "cn-beijing")
+        self.assertEqual(settings.oss_endpoint, "oss-cn-beijing.aliyuncs.com")
+
+    def test_resolve_tingwu_settings_requires_standard_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ACCESS_KEY_ID=legacy-ak",
+                        "ACCESS_KEY_SECRET=legacy-sk",
+                        "TINGWU_OSS_BUCKET=bucket",
+                        "TINGWU_OSS_REGION=cn-beijing",
+                        "TINGWU_OSS_ENDPOINT=oss-cn-beijing.aliyuncs.com",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                settings, err = resolve_tingwu_settings()
+        self.assertIsNone(settings)
+        self.assertIn("ALIBABA_CLOUD_ACCESS_KEY_ID", err)
+        self.assertIn("ALIBABA_CLOUD_ACCESS_KEY_SECRET", err)
+        self.assertIn("TINGWU_APP_KEY", err)
 
 
 if __name__ == "__main__":

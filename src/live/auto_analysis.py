@@ -28,6 +28,7 @@ from src.common.course_meta import course_teachers, query_course_detail
 from src.common.http import create_session, get_thread_session
 from src.common.rotating_log import RotatingLineWriter
 from src.live.analysis import _validate_analysis_args
+from src.live.tingwu import run_tingwu_remote_preflight, validate_tingwu_local_requirements
 from src.scan.live_check import LiveCheckResult, check_course_live_status
 
 _SH_TZ = ZoneInfo("Asia/Shanghai")
@@ -1041,6 +1042,18 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
                 for line in validation_errors:
                     log(f"[auto-analysis] precheck error: {line}")
                 return 1
+
+            tingwu_enabled = bool(config.analysis_args.get("tingwu_enabled", False))
+            if tingwu_enabled:
+                local_error = validate_tingwu_local_requirements()
+                if local_error:
+                    log(f"[auto-analysis] tingwu precheck failed(local): {local_error}")
+                    return 1
+                ok, remote_error = run_tingwu_remote_preflight(timeout_sec=max(5.0, float(args.timeout)))
+                if not ok:
+                    log(f"[auto-analysis] tingwu precheck failed(remote): {remote_error}")
+                    return 1
+                log("[auto-analysis] tingwu precheck ok (auth + oss probe)")
 
             for course in config.courses:
                 meta = validated_meta.get(int(course.course_id))

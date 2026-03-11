@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -160,6 +161,78 @@ def resolve_dashscope_api_key(
     return "", (
         f"missing DashScope API key: set {resolved_env} / dashscope_api_key in {account_file} "
         f"or export {resolved_env}"
+    )
+
+
+@dataclass(frozen=True)
+class TingwuSettings:
+    access_key_id: str
+    access_key_secret: str
+    app_key: str
+    oss_bucket: str
+    oss_region: str
+    oss_endpoint: str
+
+
+def resolve_tingwu_settings() -> tuple[TingwuSettings | None, str]:
+    account_file = default_account_file()
+    account_entries: dict[str, str] = {}
+    account_read_error = ""
+    if account_file.exists():
+        try:
+            account_entries = _parse_account_entries(account_file)
+        except OSError as exc:
+            account_read_error = f"failed to read account file {account_file}: {exc}"
+
+    field_specs = [
+        ("ALIBABA_CLOUD_ACCESS_KEY_ID", "access_key_id"),
+        ("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "access_key_secret"),
+        ("TINGWU_APP_KEY", "app_key"),
+        ("TINGWU_OSS_BUCKET", "oss_bucket"),
+        ("TINGWU_OSS_REGION", "oss_region"),
+        ("TINGWU_OSS_ENDPOINT", "oss_endpoint"),
+    ]
+
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for env_name, attr_name in field_specs:
+        value = _resolve_named_setting(
+            account_entries=account_entries,
+            account_candidates=[env_name.lower()],
+            env_candidates=[env_name],
+        )
+        if value:
+            resolved[attr_name] = value
+        else:
+            missing.append(env_name)
+
+    if missing:
+        if account_read_error:
+            return None, account_read_error
+        return None, (
+            "missing Tingwu settings: "
+            + ", ".join(missing)
+            + f" (set in {account_file} or matching env vars)"
+        )
+
+    endpoint = str(resolved["oss_endpoint"]).strip()
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        endpoint = endpoint.split("://", 1)[1]
+    endpoint = endpoint.strip().rstrip("/")
+    if not endpoint:
+        return None, "invalid TINGWU_OSS_ENDPOINT: empty endpoint host"
+    resolved["oss_endpoint"] = endpoint
+
+    return (
+        TingwuSettings(
+            access_key_id=resolved["access_key_id"],
+            access_key_secret=resolved["access_key_secret"],
+            app_key=resolved["app_key"],
+            oss_bucket=resolved["oss_bucket"],
+            oss_region=resolved["oss_region"],
+            oss_endpoint=resolved["oss_endpoint"],
+        ),
+        "",
     )
 
 

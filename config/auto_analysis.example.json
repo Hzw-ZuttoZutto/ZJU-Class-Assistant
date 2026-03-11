@@ -46,7 +46,10 @@
     "rt_context_wait_timeout_sec_1": 1,
     "rt_context_wait_timeout_sec_2": 5,
     "rt_log_rotate_max_bytes": 67108864,
-    "rt_log_rotate_backup_count": 20
+    "rt_log_rotate_backup_count": 20,
+    "tingwu_enabled": false,
+    "tingwu_poll_interval_sec": 30,
+    "tingwu_max_wait_hours": 6
   },
   "courses": [
     {

@@ -22,3 +22,11 @@ DASHSCOPE_API_KEY=your_dashscope_api_key
 # [开启 --rt-dingtalk-enabled 时必填] 钉钉机器人配置
 DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=your_token
 DINGTALK_SECRET=SECxxxxxxxxxxxxxxxxxxxxxxxx
+
+# [开启 --tingwu-enabled 时必填] 通义听悟 + OSS 配置（仅支持以下标准键名）
+ALIBABA_CLOUD_ACCESS_KEY_ID=your_aliyun_access_key_id
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=your_aliyun_access_key_secret
+TINGWU_APP_KEY=your_tingwu_app_key
+TINGWU_OSS_BUCKET=your_oss_bucket
+TINGWU_OSS_REGION=cn-beijing
+TINGWU_OSS_ENDPOINT=oss-cn-beijing.aliyuncs.com

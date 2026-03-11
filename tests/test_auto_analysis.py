@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from src.live.auto_analysis import (
     _validate_analysis_args_map,
     _validate_configured_courses,
     load_auto_analysis_config,
+    run_auto_analysis,
 )
 
 
@@ -298,6 +300,80 @@ class AutoAnalysisArgsTests(unittest.TestCase):
                 }
             )
         self.assertEqual(err, "")
+
+
+class AutoAnalysisTingwuPrecheckRunTests(unittest.TestCase):
+    def test_run_auto_analysis_fails_when_tingwu_remote_precheck_fails(self) -> None:
+        payload = {
+            "timezone": "Asia/Shanghai",
+            "analysis_args": {
+                "rt_dingtalk_enabled": True,
+                "rt_asr_model": "fun-asr-realtime",
+                "tingwu_enabled": True,
+            },
+            "courses": [
+                {
+                    "course_id": 101,
+                    "title": "课程A",
+                    "teacher": "老师A",
+                    "slots": [{"start": "2026-03-09 22:12:00", "end": "2026-03-09 23:13:00"}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            config_path = _write_config(Path(td), payload)
+            args = argparse.Namespace(
+                config=str(config_path),
+                username="u",
+                password="p",
+                tenant_code="112",
+                authcode="",
+                timeout=20,
+            )
+
+            class _FakeTokenManager:
+                def __init__(self, **_kwargs) -> None:
+                    pass
+
+                def refresh(self, *_args, **_kwargs) -> tuple[bool, str]:
+                    return True, ""
+
+                def get_token(self) -> str:
+                    return "tok"
+
+            class _FakeLock:
+                def __init__(self, *, config_path: Path) -> None:
+                    self._path = config_path
+
+                @property
+                def lock_path(self) -> Path:
+                    return self._path.with_suffix(".lock")
+
+                def acquire(self) -> tuple[bool, str]:
+                    return True, ""
+
+                def release(self) -> None:
+                    return
+
+            with (
+                mock.patch("src.live.auto_analysis.resolve_credentials", return_value=("u", "p", "")),
+                mock.patch("src.live.auto_analysis._validate_analysis_args_map", return_value=""),
+                mock.patch("src.live.auto_analysis.AutoAnalysisInstanceLock", _FakeLock),
+                mock.patch("src.live.auto_analysis.LoginTokenManager", _FakeTokenManager),
+                mock.patch("src.live.auto_analysis._validate_configured_courses", return_value=([], {})),
+                mock.patch(
+                    "src.live.auto_analysis.resolve_dingtalk_bot_settings",
+                    return_value=("https://example.test/robot/send?access_token=x", "secret", ""),
+                ),
+                mock.patch("src.live.auto_analysis.validate_tingwu_local_requirements", return_value=""),
+                mock.patch(
+                    "src.live.auto_analysis.run_tingwu_remote_preflight",
+                    return_value=(False, "probe failed"),
+                ),
+            ):
+                code = run_auto_analysis(args)
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
+import json
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from src.auth import LoginTokenManager
 from src.auth.cas_client import ZJUAuthClient
 from src.common.account import resolve_credentials, resolve_dingtalk_bot_settings
 from src.common.course_meta import fetch_course_meta
-from src.common.http import create_session
+from src.common.http import create_session, get_thread_session
 from src.live.insight import (
     AnalysisRuntimeObserver,
     DingTalkNotifier,
@@ -22,6 +28,12 @@ from src.live.insight.stream_pipeline import load_hotwords
 from src.live.joiner import JoinRoomClient
 from src.live.poller import StreamPoller
 from src.live.recording.models import build_session_folder_name
+from src.live.tingwu import (
+    AudioOnlyRecorderService,
+    AudioRecordingConfig,
+    AudioSessionMeta,
+    validate_tingwu_local_requirements,
+)
 
 _RUNTIME_ENABLE_DATA_STALL_ALERT = False
 _RUNTIME_DATA_STALL_THRESHOLD_SEC = 60.0
@@ -102,6 +114,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         teacher_name=course_meta.primary_teacher,
         started_at=session_started_at,
     )
+    session_dir.mkdir(parents=True, exist_ok=True)
 
     poller = StreamPoller(
         session=create_session(pool_size=32),
@@ -290,12 +303,35 @@ def run_analysis(args: argparse.Namespace) -> int:
     )
     print("Press Ctrl+C to stop.")
 
+    tingwu_enabled = bool(getattr(args, "tingwu_enabled", False))
+    recorder: AudioOnlyRecorderService | None = None
+    tingwu_audio_file: Path | None = None
+
     poller.start()
     watchdog_base_sec = 1.0
     watchdog_max_sec = 30.0
     watchdog_backoff_sec = watchdog_base_sec
     watchdog_next_retry_at = 0.0
     try:
+        if tingwu_enabled:
+            recorder = AudioOnlyRecorderService(
+                poller=poller,
+                config=AudioRecordingConfig(poll_interval_sec=1.0, max_lag_sec=10.0),
+                session_meta=AudioSessionMeta(
+                    course_title=course_meta.title,
+                    teacher_name=course_meta.primary_teacher,
+                    session_dir=session_dir,
+                    started_at=session_started_at,
+                ),
+                log_fn=print,
+            )
+            ok, check_error = recorder.startup_check(timeout_sec=20.0)
+            if not ok:
+                print(f"Analysis failed: Tingwu audio startup check failed: {check_error}", file=sys.stderr)
+                return 1
+            recorder.start()
+            print("[analysis] Tingwu audio recorder enabled")
+
         insight_service.start()
         while True:
             time.sleep(0.5)
@@ -359,7 +395,77 @@ def run_analysis(args: argparse.Namespace) -> int:
     finally:
         runtime_observer.close()
         insight_service.stop()
+        if recorder is not None:
+            result = recorder.stop()
+            if result.success and result.final_mp3_path is not None:
+                tingwu_audio_file = result.final_mp3_path
+                print(f"[analysis] Tingwu audio finalized: {tingwu_audio_file}")
+            else:
+                message = f"Tingwu audio recording failed: {result.error} report={result.report_path}"
+                print(f"[analysis] {message}", file=sys.stderr)
+                _send_markdown_status(
+                    webhook=webhook,
+                    secret=secret,
+                    title="analysis 听悟录音失败",
+                    text="\n".join(
+                        [
+                            "# analysis 听悟录音失败",
+                            "",
+                            f"- 课程：{course_meta.title} | {course_meta.primary_teacher}",
+                            f"- 错误：{result.error}",
+                            f"- 报告：{result.report_path}",
+                        ]
+                    ),
+                )
         poller.stop()
+
+    if tingwu_enabled and tingwu_audio_file is not None:
+        job_path = session_dir / "tingwu_job.json"
+        job_payload = {
+            "version": "v1",
+            "created_at_iso": datetime.now().astimezone().isoformat(),
+            "session_dir": str(session_dir),
+            "audio_file": str(tingwu_audio_file),
+            "course_title": course_meta.title,
+            "teacher_name": course_meta.primary_teacher,
+            "started_at_iso": session_started_at.isoformat(),
+            "poll_interval_sec": max(5.0, float(getattr(args, "tingwu_poll_interval_sec", 30.0))),
+            "max_wait_hours": max(0.5, float(getattr(args, "tingwu_max_wait_hours", 6.0))),
+        }
+        job_path.write_text(json.dumps(job_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.main",
+            "tingwu-process",
+            "--job-file",
+            str(job_path),
+        ]
+        try:
+            subprocess.Popen(  # noqa: S603
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            print(f"[analysis] Tingwu worker launched: job_file={job_path}")
+        except Exception as exc:
+            error_text = f"launch tingwu worker failed: {exc}"
+            print(f"[analysis] {error_text}", file=sys.stderr)
+            _send_markdown_status(
+                webhook=webhook,
+                secret=secret,
+                title="analysis 听悟子进程拉起失败",
+                text="\n".join(
+                    [
+                        "# analysis 听悟子进程拉起失败",
+                        "",
+                        f"- 课程：{course_meta.title} | {course_meta.primary_teacher}",
+                        f"- 错误：{error_text}",
+                        f"- Job文件：{job_path}",
+                    ]
+                ),
+            )
 
     return 0
 
@@ -384,6 +490,16 @@ def _validate_analysis_args(args: argparse.Namespace) -> str:
     dingtalk_queue_size = int(getattr(args, "rt_dingtalk_queue_size", 500))
     if dingtalk_queue_size < 1:
         return "--rt-dingtalk-queue-size must be >= 1"
+    if bool(getattr(args, "tingwu_enabled", False)):
+        poll_interval = float(getattr(args, "tingwu_poll_interval_sec", 30.0))
+        max_wait_hours = float(getattr(args, "tingwu_max_wait_hours", 6.0))
+        if poll_interval < 5.0:
+            return "--tingwu-poll-interval-sec must be >= 5"
+        if max_wait_hours <= 0:
+            return "--tingwu-max-wait-hours must be > 0"
+        local_err = validate_tingwu_local_requirements()
+        if local_err:
+            return local_err
     return ""
 
 
@@ -397,3 +513,35 @@ def _parse_csv_values(raw: object) -> list[str]:
         if value:
             out.append(value)
     return out or ["zh"]
+
+
+def _send_markdown_status(*, webhook: str, secret: str, title: str, text: str) -> None:
+    url = (webhook or "").strip()
+    sec = (secret or "").strip()
+    if not url or not sec:
+        return
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": str(title or "").strip() or "analysis 通知",
+            "text": str(text or "").strip() or "analysis 通知",
+        },
+    }
+    for attempt in range(1, 4):
+        try:
+            ts_ms = int(time.time() * 1000)
+            to_sign = f"{ts_ms}\n{sec}"
+            digest = hmac.new(sec.encode("utf-8"), to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+            sign = quote_plus(base64.b64encode(digest).decode("utf-8"))
+            sep = "&" if "?" in url else "?"
+            signed_url = f"{url}{sep}timestamp={ts_ms}&sign={sign}"
+            resp = get_thread_session(pool_size=4).post(signed_url, json=payload, timeout=5.0)
+            resp.raise_for_status()
+            body = resp.json()
+            if int(body.get("errcode", -1)) != 0:
+                raise RuntimeError(f"errcode={body.get('errcode')} errmsg={body.get('errmsg', '')}")
+            return
+        except Exception:
+            if attempt >= 3:
+                return
+            time.sleep(min(3.0, attempt * 0.5))

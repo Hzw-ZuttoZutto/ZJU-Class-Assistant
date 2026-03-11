@@ -88,6 +88,9 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_context_wait_timeout_sec_2, 5.0)
         self.assertEqual(args.rt_log_rotate_max_bytes, 64 * 1024 * 1024)
         self.assertEqual(args.rt_log_rotate_backup_count, 20)
+        self.assertFalse(args.tingwu_enabled)
+        self.assertEqual(args.tingwu_poll_interval_sec, 30.0)
+        self.assertEqual(args.tingwu_max_wait_hours, 6.0)
 
     def test_analysis_args_custom(self) -> None:
         parser = build_parser()
@@ -153,6 +156,11 @@ class CliParserTests(unittest.TestCase):
                 "1048576",
                 "--rt-log-rotate-backup-count",
                 "7",
+                "--tingwu-enabled",
+                "--tingwu-poll-interval-sec",
+                "45",
+                "--tingwu-max-wait-hours",
+                "8",
             ]
         )
         self.assertEqual(args.output_dir, "/tmp/r")
@@ -181,6 +189,9 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_context_wait_timeout_sec_2, 9.0)
         self.assertEqual(args.rt_log_rotate_max_bytes, 1048576)
         self.assertEqual(args.rt_log_rotate_backup_count, 7)
+        self.assertTrue(args.tingwu_enabled)
+        self.assertEqual(args.tingwu_poll_interval_sec, 45.0)
+        self.assertEqual(args.tingwu_max_wait_hours, 8.0)
 
     def test_watch_subcommand_removed(self) -> None:
         parser = build_parser()
@@ -204,6 +215,18 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.tenant_code, "112")
         self.assertEqual(args.authcode, "")
         self.assertEqual(args.timeout, 20)
+
+    def test_tingwu_process_args(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "tingwu-process",
+                "--job-file",
+                "/tmp/tingwu_job.json",
+            ]
+        )
+        self.assertEqual(args.command, "tingwu-process")
+        self.assertEqual(args.job_file, "/tmp/tingwu_job.json")
 
 
 if __name__ == "__main__":
