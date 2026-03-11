@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from src.common.billing import reset_billing_alert_cooldown_for_tests
 from src.live.auto_analysis import (
     _analysis_args_to_tokens,
     _validate_analysis_args_map,
@@ -374,6 +375,99 @@ class AutoAnalysisTingwuPrecheckRunTests(unittest.TestCase):
             ):
                 code = run_auto_analysis(args)
         self.assertEqual(code, 1)
+
+    def test_run_auto_analysis_sends_billing_alert_when_tingwu_precheck_hits_arrears(self) -> None:
+        reset_billing_alert_cooldown_for_tests()
+        payload = {
+            "timezone": "Asia/Shanghai",
+            "analysis_args": {
+                "rt_dingtalk_enabled": True,
+                "rt_asr_model": "fun-asr-realtime",
+                "tingwu_enabled": True,
+            },
+            "courses": [
+                {
+                    "course_id": 101,
+                    "title": "课程A",
+                    "teacher": "老师A",
+                    "slots": [{"start": "2026-03-09 22:12:00", "end": "2026-03-09 23:13:00"}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            config_path = _write_config(Path(td), payload)
+            args = argparse.Namespace(
+                config=str(config_path),
+                username="u",
+                password="p",
+                tenant_code="112",
+                authcode="",
+                timeout=20,
+            )
+
+            class _FakeTokenManager:
+                def __init__(self, **_kwargs) -> None:
+                    pass
+
+                def refresh(self, *_args, **_kwargs) -> tuple[bool, str]:
+                    return True, ""
+
+                def get_token(self) -> str:
+                    return "tok"
+
+            class _FakeLock:
+                def __init__(self, *, config_path: Path) -> None:
+                    self._path = config_path
+
+                @property
+                def lock_path(self) -> Path:
+                    return self._path.with_suffix(".lock")
+
+                def acquire(self) -> tuple[bool, str]:
+                    return True, ""
+
+                def release(self) -> None:
+                    return
+
+            class _FakeSender:
+                instances: list["_FakeSender"] = []
+
+                def __init__(self, *, webhook: str, secret: str, timeout_sec: float = 5.0, retry_count: int = 3) -> None:
+                    _ = (webhook, secret, timeout_sec, retry_count)
+                    self.sent: list[tuple[str, str]] = []
+                    _FakeSender.instances.append(self)
+
+                def send_markdown(self, *, title: str, text: str) -> tuple[bool, str]:
+                    self.sent.append((str(title), str(text)))
+                    return True, ""
+
+            with (
+                mock.patch("src.live.auto_analysis.resolve_credentials", return_value=("u", "p", "")),
+                mock.patch("src.live.auto_analysis._validate_analysis_args_map", return_value=""),
+                mock.patch("src.live.auto_analysis.AutoAnalysisInstanceLock", _FakeLock),
+                mock.patch("src.live.auto_analysis.LoginTokenManager", _FakeTokenManager),
+                mock.patch("src.live.auto_analysis._validate_configured_courses", return_value=([], {})),
+                mock.patch(
+                    "src.live.auto_analysis.resolve_dingtalk_bot_settings",
+                    return_value=("https://example.test/robot/send?access_token=x", "secret", ""),
+                ),
+                mock.patch("src.live.auto_analysis.DingTalkMarkdownSender", _FakeSender),
+                mock.patch("src.live.auto_analysis.validate_tingwu_local_requirements", return_value=""),
+                mock.patch(
+                    "src.live.auto_analysis.run_tingwu_remote_preflight",
+                    return_value=(False, "tingwu auth probe failed: BRK.OverdueTenant"),
+                ),
+            ):
+                code = run_auto_analysis(args)
+
+        self.assertEqual(code, 1)
+        self.assertTrue(_FakeSender.instances)
+        sent = _FakeSender.instances[0].sent
+        self.assertTrue(sent)
+        title, text = sent[0]
+        self.assertIn("通义听悟 欠费告警", title)
+        self.assertIn("billing-cost.console.aliyun.com", text)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from src.common.billing import reset_billing_alert_cooldown_for_tests
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig
 from src.live.insight.openai_client import InsightModelResult
 from src.live.insight.stream_asr import RealtimeAsrEvent
@@ -320,6 +321,37 @@ class StreamPipelineTests(unittest.TestCase):
             self.assertIn("analysis_ok_total", stage_metrics)
             self.assertIn("analysis_drop_timeout_total", stage_metrics)
             self.assertIn("analysis_drop_error_total", stage_metrics)
+
+    def test_dashscope_billing_alert_emitted_and_cooled_down(self) -> None:
+        reset_billing_alert_cooldown_for_tests()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            hotwords = base / "hotwords.json"
+            hotwords.write_text('["签到"]', encoding="utf-8")
+            config = self._build_config(hotwords)
+            notifier = _FakeNotifier()
+            pipeline = StreamRealtimeInsightPipeline(
+                session_dir=base,
+                config=config,
+                keywords=KeywordConfig(),
+                llm_client=_FakeLlmClient(),
+                dashscope_api_key="k",
+                notifier=notifier,  # type: ignore[arg-type]
+                asr_client=_FakeAsrClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            pipeline.start()
+            try:
+                with mock.patch.object(pipeline, "_schedule_reconnect", return_value=False):
+                    pipeline._on_asr_error("Arrearage: account is not in good standing")
+                    pipeline._on_asr_error("Arrearage: account is not in good standing")
+            finally:
+                pipeline.stop()
+
+            self.assertEqual(len(notifier.events), 1)
+            event, _meta = notifier.events[0]
+            self.assertEqual(getattr(event, "reason", ""), "billing_arrears_dashscope")
+            self.assertEqual(getattr(event, "status", ""), "billing_alert")
 
     def test_load_hotwords_raises_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

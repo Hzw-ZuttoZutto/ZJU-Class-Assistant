@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from src.common.billing import reset_billing_alert_cooldown_for_tests
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, TranscriptChunk
 from src.live.insight.openai_client import InsightModelResult
 from src.live.insight.stage_processor import InsightStageProcessor
@@ -103,6 +104,57 @@ class _AlwaysOkClient:
             matched_terms=[],
             reason="ok",
         )
+
+
+class _AnalyzeBillingClient:
+    def transcribe_chunk(self, *, chunk_path: Path, stt_model: str, timeout_sec: float) -> str:
+        _ = (chunk_path, stt_model, timeout_sec)
+        return "实时文本"
+
+    def analyze_text(
+        self,
+        *,
+        analysis_model: str,
+        keywords: KeywordConfig,
+        current_text: str,
+        context_text: str,
+        chunk_seconds: float,
+        timeout_sec: float,
+        debug_hook=None,
+    ) -> InsightModelResult:
+        _ = (analysis_model, keywords, current_text, context_text, chunk_seconds, timeout_sec, debug_hook)
+        raise RuntimeError("429 insufficient_quota: You exceeded your current quota.")
+
+
+class _TranscribeBillingClient:
+    def transcribe_chunk(self, *, chunk_path: Path, stt_model: str, timeout_sec: float) -> str:
+        _ = (chunk_path, stt_model, timeout_sec)
+        raise RuntimeError("insufficient_quota")
+
+    def analyze_text(
+        self,
+        *,
+        analysis_model: str,
+        keywords: KeywordConfig,
+        current_text: str,
+        context_text: str,
+        chunk_seconds: float,
+        timeout_sec: float,
+        debug_hook=None,
+    ) -> InsightModelResult:
+        _ = (analysis_model, keywords, current_text, context_text, chunk_seconds, timeout_sec, debug_hook)
+        raise AssertionError("analyze_text should not be called when STT fails")
+
+
+class _FakeNotifier:
+    def __init__(self) -> None:
+        self.events = []
+
+    def notify_event(self, event, **kwargs) -> bool:
+        if not bool(getattr(event, "important", False)):
+            return False
+        self.events.append((event, dict(kwargs)))
+        return True
 
 
 class StageProcessorDualParamTests(unittest.TestCase):
@@ -312,6 +364,76 @@ class StageProcessorDualParamTests(unittest.TestCase):
 
             self.assertTrue((base / "realtime_transcripts.jsonl.1").exists())
             self.assertTrue((base / "analysis_prompt_trace.jsonl.1").exists())
+
+    def test_analysis_billing_alert_emits_system_event(self) -> None:
+        reset_billing_alert_cooldown_for_tests()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            notifier = _FakeNotifier()
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                dingtalk_enabled=True,
+                analysis_retry_count=1,
+                analysis_retry_interval_sec=0.0,
+                context_recent_required=0,
+                context_wait_timeout_sec_1=0.0,
+                context_wait_timeout_sec_2=0.0,
+                context_wait_timeout_sec=0.0,
+                context_target_chunks=1,
+                use_dual_context_wait=True,
+            )
+            processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_AnalyzeBillingClient(),  # type: ignore[arg-type]
+                notifier=notifier,  # type: ignore[arg-type]
+                log_fn=lambda _: None,
+            )
+            processor.process_transcript_event(
+                chunk_seq=1,
+                chunk_file="asr_sentence_000001.txt",
+                transcript_text="课堂文本",
+            )
+
+            self.assertEqual(len(notifier.events), 1)
+            event, _meta = notifier.events[0]
+            self.assertEqual(getattr(event, "reason", ""), "billing_arrears_openai")
+            self.assertEqual(getattr(event, "status", ""), "billing_alert")
+            self.assertTrue(getattr(event, "important", False))
+            details = list(getattr(event, "key_details", []))
+            self.assertTrue(any("payment_url=https://platform.openai.com" in item for item in details))
+
+    def test_stt_billing_alert_respects_service_cooldown(self) -> None:
+        reset_billing_alert_cooldown_for_tests()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            chunk1 = base / "chunk_000001.mp3"
+            chunk2 = base / "chunk_000002.mp3"
+            chunk1.write_bytes(b"audio")
+            chunk2.write_bytes(b"audio")
+
+            notifier = _FakeNotifier()
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                dingtalk_enabled=True,
+                stt_retry_count=1,
+                stt_retry_interval_sec=0.0,
+            )
+            processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_TranscribeBillingClient(),  # type: ignore[arg-type]
+                notifier=notifier,  # type: ignore[arg-type]
+                log_fn=lambda _: None,
+            )
+            processor.process_chunk(1, chunk1)
+            processor.process_chunk(2, chunk2)
+
+            self.assertEqual(len(notifier.events), 1)
+            event, _meta = notifier.events[0]
+            self.assertEqual(getattr(event, "reason", ""), "billing_arrears_openai")
 
 
 if __name__ == "__main__":

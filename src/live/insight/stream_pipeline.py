@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.common.billing import BILLING_ALERT_COOLDOWN_SEC, consume_billing_alert_cooldown, detect_billing_issue
 from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import InsightEvent, KeywordConfig, RealtimeInsightConfig
@@ -19,6 +20,13 @@ from src.live.insight.stream_asr import DashScopeRealtimeAsrClient, RealtimeAsrE
 
 def _now_epoch_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _compact_text(text: str, *, max_len: int = 180) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max(1, max_len - 1)].rstrip() + "…"
 
 
 def load_hotwords(path: Path, *, log_fn: Callable[[str], None]) -> list[str]:
@@ -248,6 +256,7 @@ class StreamRealtimeInsightPipeline:
     def _on_asr_error(self, message: str) -> None:
         if self._stop_event.is_set():
             return
+        self._maybe_emit_billing_alert(phase="asr_callback", error_text=message)
         scheduled = self._schedule_reconnect()
         if scheduled:
             self._log(f"[rt-stream-asr] error: {message}; reconnecting")
@@ -277,6 +286,7 @@ class StreamRealtimeInsightPipeline:
                     self._reconnect_delay_sec = 1.0
                     return
                 except Exception as exc:
+                    self._maybe_emit_billing_alert(phase="asr_reconnect", error_text=str(exc))
                     self._log(f"[rt-stream-asr] reconnect failed: {exc}")
                     self._reconnect_delay_sec = min(30.0, float(self._reconnect_delay_sec) * 2.0)
         finally:
@@ -324,3 +334,46 @@ class StreamRealtimeInsightPipeline:
 
     def _log(self, message: str) -> None:
         self._log_fn(message)
+
+    def _maybe_emit_billing_alert(self, *, phase: str, error_text: str) -> None:
+        issue = detect_billing_issue(service_hint="dashscope", error_text=error_text)
+        if issue is None:
+            return
+
+        allowed, remain_sec = consume_billing_alert_cooldown(issue.service_key)
+        if not allowed:
+            self._log(
+                f"[rt-billing] skip service={issue.service_key} cooldown_remain={remain_sec:.1f}s "
+                f"signal={issue.matched_signal}"
+            )
+            return
+
+        event = InsightEvent(
+            ts=datetime.now().astimezone(),
+            chunk_seq=0,
+            chunk_file=f"billing_{issue.service_key}.json",
+            model=self.config.asr_model or self.config.model,
+            important=True,
+            summary=f"{issue.display_name} 疑似欠费/停服，ASR 重连异常",
+            context_summary="stream ASR 链路不可用或退化，请检查计费状态",
+            matched_terms=[],
+            reason=issue.reason_code,
+            attempt_count=1,
+            context_chunk_count=0,
+            event_type="system_alert",
+            headline=f"{issue.display_name} 欠费告警",
+            immediate_action=f"请尽快充值并恢复服务：{issue.payment_url}",
+            key_details=[
+                f"phase={str(phase or 'unknown').strip() or 'unknown'}",
+                f"matched_signal={issue.matched_signal}",
+                f"payment_url={issue.payment_url}",
+                f"cooldown_sec={int(BILLING_ALERT_COOLDOWN_SEC)}",
+                f"error={_compact_text(error_text, max_len=260)}",
+            ],
+            status="billing_alert",
+            error=str(error_text or "").strip(),
+        )
+        try:
+            self._stage_processor.append_insight_event(event)
+        except Exception as exc:
+            self._log(f"[rt-billing] notify failed service={issue.service_key} error={exc}")

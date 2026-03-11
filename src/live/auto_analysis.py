@@ -24,6 +24,11 @@ from src.auth import LoginTokenManager
 from src.auth.cas_client import ZJUAuthClient
 from src.cli.parser import build_parser
 from src.common.account import resolve_credentials, resolve_dingtalk_bot_settings
+from src.common.billing import (
+    BILLING_ALERT_COOLDOWN_SEC,
+    consume_billing_alert_cooldown,
+    detect_billing_issue,
+)
 from src.common.course_meta import course_teachers, query_course_detail
 from src.common.http import create_session, get_thread_session
 from src.common.rotating_log import RotatingLineWriter
@@ -425,15 +430,31 @@ class AnalysisProcessController:
             self._expected_stop = False
             return
 
+        graceful_reasons = {
+            "live_closed_after_end",
+            "post_end_guard_timeout",
+            "scheduler_shutdown",
+        }
+        sigint_wait_sec = 20.0 if reason in graceful_reasons else 5.0
+        sigterm_wait_sec = 8.0 if reason in graceful_reasons else 5.0
+
         self._send_process_group_signal(proc, signal.SIGINT)
-        if self._wait_process_exit(proc, timeout_sec=5.0):
+        if self._wait_process_exit(proc, timeout_sec=sigint_wait_sec):
             return
 
+        self._log_fn(
+            f"[slot] analysis still running after SIGINT label={self.slot_label} "
+            f"waited={sigint_wait_sec:.1f}s reason={reason}, escalating to SIGTERM"
+        )
         self._send_process_group_signal(proc, signal.SIGTERM)
-        if self._wait_process_exit(proc, timeout_sec=5.0):
+        if self._wait_process_exit(proc, timeout_sec=sigterm_wait_sec):
             return
 
         kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        self._log_fn(
+            f"[slot] analysis still running after SIGTERM label={self.slot_label} "
+            f"waited={sigterm_wait_sec:.1f}s reason={reason}, escalating to {kill_signal.name}"
+        )
         self._send_process_group_signal(proc, kill_signal)
         _ = self._wait_process_exit(proc, timeout_sec=2.0)
 
@@ -949,6 +970,60 @@ class AutoAnalysisScheduler:
             self.log(f"[auto-analysis] token refresh skipped/failed: {error}")
 
 
+def _compact_text(text: str, *, max_len: int = 180) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max(1, max_len - 1)].rstrip() + "…"
+
+
+def _notify_tingwu_precheck_billing_alert(
+    *,
+    notifier: DingTalkMarkdownSender,
+    log_fn,
+    error_text: str,
+    course_count: int,
+) -> None:
+    raw_error = str(error_text or "").strip()
+    if not raw_error:
+        return
+    hint = ""
+    low = raw_error.lower()
+    if "oss probe failed" in low:
+        hint = "oss"
+    elif "tingwu auth probe failed" in low:
+        hint = "tingwu"
+    issue = detect_billing_issue(service_hint=hint, error_text=raw_error)
+    if issue is None:
+        return
+
+    allowed, remain_sec = consume_billing_alert_cooldown(issue.service_key)
+    if not allowed:
+        log_fn(
+            f"[auto-analysis] billing alert skipped service={issue.service_key} "
+            f"cooldown_remain={remain_sec:.1f}s"
+        )
+        return
+    title = f"{issue.display_name} 欠费告警"
+    text = "\n".join(
+        [
+            f"# {issue.display_name} 欠费告警",
+            "",
+            "- 场景：auto-analysis 启动前听悟远端预检失败",
+            f"- 影响课程数：{max(0, int(course_count))}",
+            f"- 命中信号：{issue.matched_signal}",
+            f"- 冷却：{int(BILLING_ALERT_COOLDOWN_SEC)} 秒（按服务）",
+            f"- 缴费入口：{issue.payment_url}",
+            f"- 错误：{_compact_text(raw_error, max_len=300)}",
+        ]
+    )
+    ok, err = notifier.send_markdown(title=title, text=text)
+    if ok:
+        log_fn(f"[auto-analysis] billing alert sent service={issue.service_key}")
+    else:
+        log_fn(f"[auto-analysis] billing alert failed service={issue.service_key} error={err}")
+
+
 def run_auto_analysis(args: argparse.Namespace) -> int:
     config_path = Path(str(getattr(args, "config", "") or "")).expanduser().resolve()
     if not config_path.exists():
@@ -1043,26 +1118,6 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
                     log(f"[auto-analysis] precheck error: {line}")
                 return 1
 
-            tingwu_enabled = bool(config.analysis_args.get("tingwu_enabled", False))
-            if tingwu_enabled:
-                local_error = validate_tingwu_local_requirements()
-                if local_error:
-                    log(f"[auto-analysis] tingwu precheck failed(local): {local_error}")
-                    return 1
-                ok, remote_error = run_tingwu_remote_preflight(timeout_sec=max(5.0, float(args.timeout)))
-                if not ok:
-                    log(f"[auto-analysis] tingwu precheck failed(remote): {remote_error}")
-                    return 1
-                log("[auto-analysis] tingwu precheck ok (auth + oss probe)")
-
-            for course in config.courses:
-                meta = validated_meta.get(int(course.course_id))
-                teachers = ",".join(meta[1]) if meta is not None else ""
-                log(
-                    f"[auto-analysis] precheck ok course_id={course.course_id} "
-                    f"title={course.title} teacher={course.teacher} teachers={teachers}"
-                )
-
             webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
             if dingtalk_error:
                 log(f"[auto-analysis] dingtalk config error: {dingtalk_error}")
@@ -1073,6 +1128,32 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
                 timeout_sec=5.0,
                 retry_count=3,
             )
+
+            tingwu_enabled = bool(config.analysis_args.get("tingwu_enabled", False))
+            if tingwu_enabled:
+                local_error = validate_tingwu_local_requirements()
+                if local_error:
+                    log(f"[auto-analysis] tingwu precheck failed(local): {local_error}")
+                    return 1
+                ok, remote_error = run_tingwu_remote_preflight(timeout_sec=max(5.0, float(args.timeout)))
+                if not ok:
+                    log(f"[auto-analysis] tingwu precheck failed(remote): {remote_error}")
+                    _notify_tingwu_precheck_billing_alert(
+                        notifier=notifier,
+                        log_fn=log,
+                        error_text=remote_error,
+                        course_count=len(config.courses),
+                    )
+                    return 1
+                log("[auto-analysis] tingwu precheck ok (auth + oss probe)")
+
+            for course in config.courses:
+                meta = validated_meta.get(int(course.course_id))
+                teachers = ",".join(meta[1]) if meta is not None else ""
+                log(
+                    f"[auto-analysis] precheck ok course_id={course.course_id} "
+                    f"title={course.title} teacher={course.teacher} teachers={teachers}"
+                )
 
             slots = _build_slot_runtime(config=config)
             scheduler = AutoAnalysisScheduler(

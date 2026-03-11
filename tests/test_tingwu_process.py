@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from src.common.billing import reset_billing_alert_cooldown_for_tests
 from src.common.account import TingwuSettings
 from src.live.tingwu.process import TingwuJob, _render_summary_markdown, _run_tingwu_job, run_tingwu_remote_preflight
 
@@ -192,6 +193,82 @@ class TingwuProcessTests(unittest.TestCase):
             ok, err = run_tingwu_remote_preflight(timeout_sec=5.0)
         self.assertTrue(ok)
         self.assertEqual(err, "")
+
+    def test_run_tingwu_job_billing_failure_on_openapi_sends_specific_alert(self) -> None:
+        reset_billing_alert_cooldown_for_tests()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            audio = root / "audio.mp3"
+            audio.write_bytes(b"mp3")
+            job = TingwuJob(
+                session_dir=root,
+                audio_file=audio,
+                course_title="课程A",
+                teacher_name="老师A",
+                started_at_iso="2026-03-11T00:00:00+08:00",
+                poll_interval_sec=5.0,
+                max_wait_hours=1.0,
+            )
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _BillingOpenApiClient(_FakeOpenApiClient):
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    _ = (app_key, file_url, task_key)
+                    raise RuntimeError("TeaException: BRK.OverdueTenant service status is overdue")
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _BillingOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _FakeOssClient),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 1)
+            titles = [title for title, _text in notifier.sent]
+            texts = [text for _title, text in notifier.sent]
+            self.assertIn("通义听悟 欠费告警", titles)
+            self.assertNotIn("通义听悟处理失败", titles)
+            self.assertTrue(any("billing-cost.console.aliyun.com" in text for text in texts))
+
+    def test_run_tingwu_job_billing_failure_on_oss_sends_specific_alert(self) -> None:
+        reset_billing_alert_cooldown_for_tests()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            audio = root / "audio.mp3"
+            audio.write_bytes(b"mp3")
+            job = TingwuJob(
+                session_dir=root,
+                audio_file=audio,
+                course_title="课程A",
+                teacher_name="老师A",
+                started_at_iso="2026-03-11T00:00:00+08:00",
+                poll_interval_sec=5.0,
+                max_wait_hours=1.0,
+            )
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _BillingOssClient(_FakeOssClient):
+                def upload_file_multipart(self, *, object_key: str, file_path: Path, part_size: int = 8 * 1024 * 1024) -> None:
+                    _ = (object_key, file_path, part_size)
+                    raise RuntimeError(
+                        "0003-00000806 The operation is not valid for the user account in the current billing state"
+                    )
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _FakeOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _BillingOssClient),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 1)
+            titles = [title for title, _text in notifier.sent]
+            texts = [text for _title, text in notifier.sent]
+            self.assertIn("阿里云 OSS 欠费告警", titles)
+            self.assertNotIn("通义听悟处理失败", titles)
+            self.assertTrue(any("billing-cost.console.aliyun.com" in text for text in texts))
 
     def test_render_summary_markdown_prefers_new_tingwu_fields(self) -> None:
         with tempfile.TemporaryDirectory() as td:

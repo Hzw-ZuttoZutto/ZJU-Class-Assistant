@@ -208,6 +208,28 @@ class AnalysisProcessControllerTests(unittest.TestCase):
         called_signals = [call.args[1] for call in killpg.call_args_list]
         self.assertEqual(called_signals, [signal.SIGINT, signal.SIGTERM, kill_signal])
 
+    def test_stop_waits_longer_on_course_end_reason(self) -> None:
+        controller = AnalysisProcessController(slot_label="slot", log_fn=lambda _msg: None)
+        fake_proc = mock.Mock()
+        fake_proc.pid = 12345
+        fake_proc.poll.return_value = None
+        controller._proc = fake_proc  # noqa: SLF001
+
+        wait_calls: list[float] = []
+
+        def _capture_wait(_proc: object, *, timeout_sec: float) -> bool:
+            wait_calls.append(float(timeout_sec))
+            return False
+
+        with (
+            mock.patch.object(controller, "_wait_process_exit", side_effect=_capture_wait),
+            mock.patch("src.live.auto_analysis.os.getpgid", return_value=12345),
+            mock.patch("src.live.auto_analysis.os.killpg"),
+        ):
+            controller.stop(reason="live_closed_after_end")
+
+        self.assertEqual(wait_calls, [20.0, 8.0, 2.0])
+
 
 if __name__ == "__main__":
     unittest.main()

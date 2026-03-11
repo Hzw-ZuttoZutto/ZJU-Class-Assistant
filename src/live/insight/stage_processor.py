@@ -8,6 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.common.billing import (
+    BILLING_ALERT_COOLDOWN_SEC,
+    consume_billing_alert_cooldown,
+    detect_billing_issue,
+)
 from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.models import (
     InsightEvent,
@@ -93,6 +98,8 @@ class InsightStageProcessor:
         now = datetime.now().astimezone()
         transcript_text, stt_status, stt_attempt, stt_error, stt_elapsed_sec = self.transcribe_with_retry(
             chunk_path,
+            chunk_seq=chunk_seq,
+            chunk_file=chunk_path.name,
             profile=profile,
         )
         transcript_chunk = TranscriptChunk(
@@ -314,6 +321,9 @@ class InsightStageProcessor:
     def transcribe_with_retry(
         self,
         chunk_path: Path,
+        *,
+        chunk_seq: int = 0,
+        chunk_file: str = "",
         profile: dict[str, Any] | None = None,
     ) -> tuple[str, str, int, str, float]:
         if self.client is None:
@@ -378,6 +388,13 @@ class InsightStageProcessor:
                 return text, "ok", attempt, "", elapsed
             except Exception as exc:
                 last_error = str(exc)
+                self._maybe_emit_billing_alert(
+                    service_hint="openai",
+                    phase="stt_transcribe",
+                    error_text=last_error,
+                    chunk_seq=chunk_seq,
+                    chunk_file=chunk_file or chunk_path.name,
+                )
                 if attempt < total_attempts:
                     time.sleep(retry_interval_sec or 0.2)
                     continue
@@ -497,6 +514,13 @@ class InsightStageProcessor:
                 return result, "ok", attempt, "", elapsed
             except Exception as exc:
                 last_error = str(exc)
+                self._maybe_emit_billing_alert(
+                    service_hint="openai",
+                    phase="analysis_invoke",
+                    error_text=last_error,
+                    chunk_seq=chunk_seq,
+                    chunk_file=chunk_file,
+                )
                 if attempt < total_attempts:
                     time.sleep(retry_interval_sec or 0.2)
                     continue
@@ -941,6 +965,62 @@ class InsightStageProcessor:
                 f"[rt-dingtalk] enqueue failed seq={event.chunk_seq} chunk={event.chunk_file} error={exc}"
             )
 
+    def _maybe_emit_billing_alert(
+        self,
+        *,
+        service_hint: str,
+        phase: str,
+        error_text: str,
+        chunk_seq: int,
+        chunk_file: str,
+    ) -> None:
+        issue = detect_billing_issue(
+            service_hint=service_hint,
+            error_text=error_text,
+            api_base_url=str(getattr(self.config, "api_base_url", "") or ""),
+        )
+        if issue is None:
+            return
+
+        allowed, remain_sec = consume_billing_alert_cooldown(issue.service_key)
+        if not allowed:
+            self._log(
+                f"[rt-billing] skip service={issue.service_key} cooldown_remain={remain_sec:.1f}s "
+                f"signal={issue.matched_signal}"
+            )
+            return
+
+        seq = max(0, int(chunk_seq))
+        file_name = str(chunk_file or f"billing_{issue.service_key}.txt").strip() or f"billing_{issue.service_key}.txt"
+        summary = f"{issue.display_name} 疑似欠费/停服，实时分析受影响"
+        details = [
+            f"phase={str(phase or 'unknown').strip() or 'unknown'}",
+            f"matched_signal={issue.matched_signal}",
+            f"payment_url={issue.payment_url}",
+            f"cooldown_sec={int(BILLING_ALERT_COOLDOWN_SEC)}",
+            f"error={_compact_error_text(error_text)}",
+        ]
+        event = InsightEvent(
+            ts=datetime.now().astimezone(),
+            chunk_seq=seq,
+            chunk_file=file_name,
+            model=self.config.model,
+            important=True,
+            summary=summary,
+            context_summary="计费状态异常，请检查余额/套餐与账单状态",
+            matched_terms=[],
+            reason=issue.reason_code,
+            attempt_count=1,
+            context_chunk_count=0,
+            event_type="system_alert",
+            headline=f"{issue.display_name} 欠费告警",
+            immediate_action=f"请尽快充值并恢复服务：{issue.payment_url}",
+            key_details=details,
+            status="billing_alert",
+            error=str(error_text or "").strip(),
+        )
+        self.append_insight_event(event)
+
     def _resolve_stream_t0_ms(self) -> int | None:
         provider = self._stream_t0_provider
         if provider is None:
@@ -959,3 +1039,10 @@ class InsightStageProcessor:
 
     def _log(self, msg: str) -> None:
         self._log_fn(msg)
+
+
+def _compact_error_text(value: str, *, max_len: int = 260) -> str:
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max(1, max_len - 1)].rstrip() + "…"

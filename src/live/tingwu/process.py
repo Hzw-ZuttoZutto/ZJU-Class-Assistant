@@ -15,6 +15,12 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from src.common.account import TingwuSettings, resolve_dingtalk_bot_settings, resolve_tingwu_settings
+from src.common.billing import (
+    BILLING_ALERT_COOLDOWN_SEC,
+    BillingIssue,
+    consume_billing_alert_cooldown,
+    detect_billing_issue,
+)
 from src.common.http import get_thread_session
 
 _TINGWU_ENDPOINT = "tingwu.cn-beijing.aliyuncs.com"
@@ -314,6 +320,7 @@ def run_tingwu_process(args: argparse.Namespace) -> int:
 def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTalkMarkdownSender | None) -> int:
     started_mono = time.monotonic()
     error_path = job.session_dir / "tingwu_process_error.json"
+    phase = "startup"
     try:
         if not job.audio_file.exists() or job.audio_file.stat().st_size <= 0:
             raise RuntimeError(f"audio file missing or empty: {job.audio_file}")
@@ -323,12 +330,16 @@ def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTal
 
         object_key = _build_object_key(job=job)
         logger.log(f"[tingwu] upload start object_key={object_key}")
+        phase = "oss_upload"
         oss_client = TingwuOssClient(settings)
         oss_client.upload_file_multipart(object_key=object_key, file_path=job.audio_file)
+        phase = "oss_sign_url"
         signed_url = oss_client.sign_get_url(object_key=object_key, expires_sec=24 * 3600)
 
+        phase = "openapi_init"
         openapi_client = TingwuOpenApiClient(settings)
         task_key = _build_task_key(job=job)
+        phase = "openapi_create_task"
         create_payload = openapi_client.create_task(
             app_key=settings.app_key,
             file_url=signed_url,
@@ -348,6 +359,7 @@ def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTal
         deadline = time.monotonic() + max(1800.0, float(job.max_wait_hours) * 3600.0)
         final_info: dict[str, Any] | None = None
         while time.monotonic() < deadline:
+            phase = "openapi_poll"
             info = openapi_client.get_task_info(task_id)
             status = _extract_task_status(info).upper()
             logger.log(f"[tingwu] poll task_id={task_id} status={status or 'UNKNOWN'}")
@@ -363,7 +375,9 @@ def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTal
 
         result_dir = job.session_dir / _RESULT_DIR_NAME
         result_dir.mkdir(parents=True, exist_ok=True)
+        phase = "result_download"
         result_payloads = _download_result_jsons(info=final_info, result_dir=result_dir, logger=logger)
+        phase = "render_summary"
         summary_path = _render_summary_markdown(
             job=job,
             task_id=task_id,
@@ -387,7 +401,30 @@ def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTal
         message = _format_exception(exc)
         logger.log(f"[tingwu] process failed: {message}")
         _write_error_file(error_path=error_path, job=job, error=message)
-        _notify_failure(notifier=notifier, job=job, error=message, error_path=error_path, logger=logger)
+        issue = detect_billing_issue(
+            service_hint=_phase_service_hint(phase),
+            error_text=message,
+        )
+        sent_billing_alert = False
+        if issue is not None:
+            allowed, remain_sec = consume_billing_alert_cooldown(issue.service_key)
+            if allowed:
+                sent_billing_alert = _notify_billing_failure(
+                    notifier=notifier,
+                    job=job,
+                    issue=issue,
+                    phase=phase,
+                    error=message,
+                    error_path=error_path,
+                    logger=logger,
+                )
+            else:
+                logger.log(
+                    f"[tingwu] billing alert skipped service={issue.service_key} "
+                    f"cooldown_remain={remain_sec:.1f}s"
+                )
+        if not sent_billing_alert:
+            _notify_failure(notifier=notifier, job=job, error=message, error_path=error_path, logger=logger)
         return 1
 
 
@@ -946,6 +983,49 @@ def _notify_failure(
     ok, err = notifier.send(title=title, text=text)
     if not ok:
         logger.log(f"[tingwu] dingtalk failure notify failed: {err}")
+
+
+def _notify_billing_failure(
+    *,
+    notifier: _DingTalkMarkdownSender | None,
+    job: TingwuJob,
+    issue: BillingIssue,
+    phase: str,
+    error: str,
+    error_path: Path,
+    logger: _WorkerLogger,
+) -> bool:
+    if notifier is None:
+        logger.log("[tingwu] billing alert skipped: dingtalk notifier unavailable")
+        return False
+    title = f"{issue.display_name} 欠费告警"
+    text = "\n".join(
+        [
+            f"# {issue.display_name} 欠费告警",
+            "",
+            f"- 课程：{job.course_title or 'N/A'} | {job.teacher_name or 'N/A'}",
+            f"- 阶段：{str(phase or 'unknown').strip() or 'unknown'}",
+            f"- 命中信号：{issue.matched_signal}",
+            f"- 冷却：{int(BILLING_ALERT_COOLDOWN_SEC)} 秒（按服务）",
+            f"- 缴费入口：{issue.payment_url}",
+            f"- 错误：{_compact_text(error, max_len=300)}",
+            f"- 错误详情文件：{error_path}",
+        ]
+    )
+    ok, err = notifier.send(title=title, text=text)
+    if not ok:
+        logger.log(f"[tingwu] dingtalk billing notify failed: {err}")
+        return False
+    return True
+
+
+def _phase_service_hint(phase: str) -> str:
+    normalized = str(phase or "").strip().lower()
+    if normalized.startswith("oss_"):
+        return "oss"
+    if normalized.startswith("openapi_"):
+        return "tingwu"
+    return ""
 
 
 def _build_object_key(*, job: TingwuJob) -> str:
