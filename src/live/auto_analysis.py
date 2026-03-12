@@ -435,7 +435,7 @@ class AnalysisProcessController:
             "post_end_guard_timeout",
             "scheduler_shutdown",
         }
-        sigint_wait_sec = 20.0 if reason in graceful_reasons else 5.0
+        sigint_wait_sec = 130.0 if reason in graceful_reasons else 5.0
         sigterm_wait_sec = 8.0 if reason in graceful_reasons else 5.0
 
         self._send_process_group_signal(proc, signal.SIGINT)
