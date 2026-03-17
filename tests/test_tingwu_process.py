@@ -146,9 +146,16 @@ class TingwuProcessTests(unittest.TestCase):
             ):
                 code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
             self.assertEqual(code, 0)
-            self.assertTrue((root / "tingwu_summary.md").exists())
+            summary_path = root / "tingwu_summary.md"
+            self.assertTrue(summary_path.exists())
             self.assertTrue((root / "tingwu_results").exists())
             self.assertGreaterEqual(len(notifier.sent), 2)
+            expected_text = summary_path.read_text(encoding="utf-8")
+            success_title, success_text = notifier.sent[-1]
+            self.assertEqual(success_title, "通义听悟课后汇总")
+            self.assertEqual(success_text, expected_text)
+            self.assertNotIn("Markdown：", success_text)
+            self.assertNotIn("JSON目录：", success_text)
 
     def test_run_tingwu_job_failure_writes_error_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:

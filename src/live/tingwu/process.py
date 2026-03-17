@@ -318,7 +318,6 @@ def run_tingwu_process(args: argparse.Namespace) -> int:
 
 
 def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTalkMarkdownSender | None) -> int:
-    started_mono = time.monotonic()
     error_path = job.session_dir / "tingwu_process_error.json"
     phase = "startup"
     try:
@@ -385,14 +384,9 @@ def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTal
             result_payloads=result_payloads,
         )
 
-        elapsed_sec = time.monotonic() - started_mono
         _notify_success(
             notifier=notifier,
-            job=job,
-            task_id=task_id,
             summary_path=summary_path,
-            result_dir=result_dir,
-            elapsed_sec=elapsed_sec,
             logger=logger,
         )
         logger.log("[tingwu] process completed")
@@ -932,28 +926,21 @@ def _notify_submit(
 def _notify_success(
     *,
     notifier: _DingTalkMarkdownSender | None,
-    job: TingwuJob,
-    task_id: str,
     summary_path: Path,
-    result_dir: Path,
-    elapsed_sec: float,
     logger: _WorkerLogger,
 ) -> None:
     if notifier is None:
         return
+    text = summary_path.read_text(encoding="utf-8")
     title = "通义听悟处理完成"
-    text = "\n".join(
-        [
-            "# 通义听悟处理完成",
-            "",
-            f"- 课程：{job.course_title or 'N/A'} | {job.teacher_name or 'N/A'}",
-            f"- TaskId：{task_id}",
-            f"- 处理耗时：{elapsed_sec:.1f}s",
-            f"- Markdown：{summary_path}",
-            f"- JSON目录：{result_dir}",
-            "- 说明：本通知仅发送状态，不附完整 Markdown 正文。",
-        ]
-    )
+    for line in text.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        title_candidate = candidate.lstrip("#").strip()
+        if title_candidate:
+            title = title_candidate
+            break
     ok, err = notifier.send(title=title, text=text)
     if not ok:
         logger.log(f"[tingwu] dingtalk success notify failed: {err}")
