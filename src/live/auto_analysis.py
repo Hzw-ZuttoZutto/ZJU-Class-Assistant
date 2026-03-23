@@ -588,29 +588,34 @@ class AutoAnalysisScheduler:
 
     def _tick_slot(self, slot: CourseSlotRuntime, *, now: datetime) -> None:
         controller = self._controllers[slot.slot_id]
+        guard_end = self._slot_guard_end(slot)
         exited, exit_code, expected_stop = controller.reap()
         if exited:
             self.log(
                 f"[slot] analysis exited label={slot.label()} code={exit_code} expected={expected_stop}"
             )
-            if (not expected_stop) and now <= self._slot_guard_end(slot):
+            if slot.state != "DONE" and (not expected_stop) and now <= guard_end:
                 self._notify_retry_throttled(
                     slot=slot,
                     reason=f"analysis exited unexpectedly (code={exit_code})",
                     now_mono=time.monotonic(),
                 )
 
-        guard_end = self._slot_guard_end(slot)
+        if slot.state == "DONE":
+            if controller.is_running():
+                controller.stop(reason=slot.ended_reason or "scheduler_shutdown")
+            return
+
         preheat_start = slot.start_at - timedelta(minutes=max(0, self._runtime.pre_start_notice_minutes))
 
         if now >= guard_end:
             if controller.is_running():
                 controller.stop(reason="post_end_guard_timeout")
-            if not slot.end_notice_sent:
-                slot.end_notice_sent = True
-                slot.ended_reason = slot.ended_reason or "post_end_guard_timeout"
-                self._notify_course_end(slot=slot, now=now, reason=slot.ended_reason)
-            slot.state = "DONE"
+            self._mark_slot_done(
+                slot=slot,
+                now=now,
+                reason=slot.ended_reason or "post_end_guard_timeout",
+            )
             return
 
         if (not slot.pre_notice_sent) and now >= preheat_start:
@@ -689,6 +694,14 @@ class AutoAnalysisScheduler:
             return
 
         slot.last_probe_error = ""
+        if slot.state == "DONE" or slot.end_notice_sent:
+            if result.is_live:
+                self.log(
+                    f"[slot] ignoring live_detected for completed slot label={slot.label()} "
+                    f"sub_id={str(result.sub_id or '').strip()}"
+                )
+            return
+
         if result.is_live:
             sub_id = str(result.sub_id or "").strip()
             if not sub_id:
@@ -715,20 +728,12 @@ class AutoAnalysisScheduler:
 
         if now >= slot.end_at and controller.is_running():
             controller.stop(reason="live_closed_after_end")
-            if not slot.end_notice_sent:
-                slot.end_notice_sent = True
-                slot.ended_reason = "live_closed_after_end"
-                self._notify_course_end(slot=slot, now=now, reason=slot.ended_reason)
-            slot.state = "DONE"
+            self._mark_slot_done(slot=slot, now=now, reason="live_closed_after_end")
             return
 
         if (not controller.is_running()) and slot.active_sub_id and now <= self._slot_guard_end(slot):
             if now >= slot.end_at:
-                if not slot.end_notice_sent:
-                    slot.end_notice_sent = True
-                    slot.ended_reason = "live_closed_after_end"
-                    self._notify_course_end(slot=slot, now=now, reason=slot.ended_reason)
-                slot.state = "DONE"
+                self._mark_slot_done(slot=slot, now=now, reason="live_closed_after_end")
                 return
             self._start_analysis(slot=slot, sub_id=slot.active_sub_id, now=now, reason="retry_after_exit")
 
@@ -740,6 +745,12 @@ class AutoAnalysisScheduler:
         now: datetime,
         reason: str,
     ) -> None:
+        if slot.state == "DONE" or slot.end_notice_sent:
+            self.log(
+                f"[slot] skip analysis start for completed slot label={slot.label()} "
+                f"reason={reason} sub_id={sub_id}"
+            )
+            return
         controller = self._controllers[slot.slot_id]
         cmd = self._build_analysis_command(course_id=slot.course_id, sub_id=sub_id)
         ok, error = controller.start(cmd=cmd)
@@ -769,6 +780,18 @@ class AutoAnalysisScheduler:
         self.log(
             f"[slot] analysis started label={slot.label()} sub_id={sub_id} reason={reason} cmd={' '.join(cmd)}"
         )
+
+    def _mark_slot_done(self, *, slot: CourseSlotRuntime, now: datetime, reason: str) -> None:
+        final_reason = str(reason or "").strip() or "completed"
+        if not slot.end_notice_sent:
+            slot.end_notice_sent = True
+            slot.ended_reason = final_reason
+            self._notify_course_end(slot=slot, now=now, reason=slot.ended_reason)
+        else:
+            slot.ended_reason = slot.ended_reason or final_reason
+        slot.active_sub_id = ""
+        slot.last_probe_is_live = False
+        slot.state = "DONE"
 
     def _maybe_send_no_live_alert(self, *, slot: CourseSlotRuntime, now: datetime) -> None:
         if slot.has_started_once:
@@ -958,7 +981,7 @@ class AutoAnalysisScheduler:
         return cmd
 
     def _slot_guard_end(self, slot: CourseSlotRuntime) -> datetime:
-        return slot.end_at + timedelta(minutes=max(0, self._runtime.post_end_guard_minutes))
+        return _slot_guard_end_for_runtime(slot=slot, runtime=self._runtime)
 
     def _maybe_refresh_token(self) -> None:
         now_mono = time.monotonic()
@@ -1156,6 +1179,12 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
                 )
 
             slots = _build_slot_runtime(config=config)
+            _silently_complete_historical_slots_at_startup(
+                slots=slots,
+                runtime=config.runtime,
+                now=datetime.now(ZoneInfo(config.timezone)),
+                log_fn=log,
+            )
             scheduler = AutoAnalysisScheduler(
                 args=args,
                 config=config,
@@ -1416,6 +1445,39 @@ def _build_slot_runtime(
             )
     slots.sort(key=lambda item: item.start_at)
     return slots
+
+
+def _slot_guard_end_for_runtime(
+    *,
+    slot: CourseSlotRuntime,
+    runtime: AutoRuntimeConfig,
+) -> datetime:
+    return slot.end_at + timedelta(minutes=max(0, int(runtime.post_end_guard_minutes)))
+
+
+def _silently_complete_historical_slots_at_startup(
+    *,
+    slots: list[CourseSlotRuntime],
+    runtime: AutoRuntimeConfig,
+    now: datetime,
+    log_fn,
+) -> int:
+    silent_total = 0
+    for slot in slots:
+        if slot.state == "DONE":
+            continue
+        if now < _slot_guard_end_for_runtime(slot=slot, runtime=runtime):
+            continue
+        slot.state = "DONE"
+        slot.end_notice_sent = True
+        slot.ended_reason = "startup_historical_expired"
+        slot.active_sub_id = ""
+        slot.last_probe_is_live = False
+        silent_total += 1
+
+    if silent_total > 0:
+        log_fn(f"[auto-analysis] startup silent-completed historical slots={silent_total}")
+    return silent_total
 
 
 def _resolve_output_root(analysis_args: dict[str, Any]) -> Path:

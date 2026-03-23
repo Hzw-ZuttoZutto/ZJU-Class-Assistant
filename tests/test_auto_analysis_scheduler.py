@@ -10,6 +10,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from src.live.auto_analysis import (
+    _silently_complete_historical_slots_at_startup,
     AnalysisProcessController,
     AutoAnalysisConfig,
     AutoAnalysisInstanceLock,
@@ -46,21 +47,35 @@ class _FakeLogQueue:
         self.lines.append(str(msg))
 
 
-def _build_scheduler_and_slot() -> tuple[AutoAnalysisScheduler, CourseSlotRuntime, _FakeNotifier]:
-    tz = ZoneInfo("Asia/Shanghai")
-    now = datetime.now(tz)
-    slot = CourseSlotRuntime(
-        slot_id="slot-1",
-        course_title="课程A",
-        teacher="老师A",
-        course_id=101,
-        start_at=now - timedelta(minutes=1),
-        end_at=now + timedelta(minutes=59),
+def _make_slot(
+    *,
+    slot_id: str,
+    course_id: int,
+    start_at: datetime,
+    end_at: datetime,
+    course_title: str = "课程A",
+    teacher: str = "老师A",
+) -> CourseSlotRuntime:
+    return CourseSlotRuntime(
+        slot_id=slot_id,
+        course_title=course_title,
+        teacher=teacher,
+        course_id=course_id,
+        start_at=start_at,
+        end_at=end_at,
     )
+
+
+def _build_scheduler(
+    *,
+    slots: list[CourseSlotRuntime],
+    runtime: AutoRuntimeConfig | None = None,
+) -> tuple[AutoAnalysisScheduler, _FakeNotifier, _FakeLogQueue]:
     config = AutoAnalysisConfig(
         timezone="Asia/Shanghai",
         scan=AutoScanConfig(),
-        runtime=AutoRuntimeConfig(
+        runtime=runtime
+        or AutoRuntimeConfig(
             no_live_alert_interval_sec=30.0,
             no_live_alert_duration_minutes=15,
             main_tick_sec=1.0,
@@ -69,14 +84,28 @@ def _build_scheduler_and_slot() -> tuple[AutoAnalysisScheduler, CourseSlotRuntim
         courses=[],
     )
     notifier = _FakeNotifier()
+    log_queue = _FakeLogQueue()
     scheduler = AutoAnalysisScheduler(
         args=argparse.Namespace(timeout=20, tenant_code="112", username="", password="", authcode=""),
         config=config,
         token_manager=_FakeTokenManager(),  # type: ignore[arg-type]
         notifier=notifier,  # type: ignore[arg-type]
-        slots=[slot],
-        log_queue=_FakeLogQueue(),  # type: ignore[arg-type]
+        slots=slots,
+        log_queue=log_queue,  # type: ignore[arg-type]
     )
+    return scheduler, notifier, log_queue
+
+
+def _build_scheduler_and_slot() -> tuple[AutoAnalysisScheduler, CourseSlotRuntime, _FakeNotifier]:
+    tz = ZoneInfo("Asia/Shanghai")
+    now = datetime.now(tz)
+    slot = _make_slot(
+        slot_id="slot-1",
+        course_id=101,
+        start_at=now - timedelta(minutes=1),
+        end_at=now + timedelta(minutes=59),
+    )
+    scheduler, notifier, _log_queue = _build_scheduler(slots=[slot])
     return scheduler, slot, notifier
 
 
@@ -84,6 +113,175 @@ class AutoAnalysisSchedulerTests(unittest.TestCase):
     def test_live_probe_session_ignores_env_proxy(self) -> None:
         scheduler, _slot, _notifier = _build_scheduler_and_slot()
         self.assertFalse(bool(scheduler._live_session.trust_env))  # noqa: SLF001
+
+    def test_startup_silent_completion_marks_historical_slot_done(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime(2026, 3, 23, 12, 30, tzinfo=tz)
+        slot = _make_slot(
+            slot_id="slot-historical",
+            course_id=101,
+            start_at=now - timedelta(hours=3),
+            end_at=now - timedelta(hours=1),
+        )
+        slot.active_sub_id = "1903390"
+        runtime = AutoRuntimeConfig(post_end_guard_minutes=15)
+        logs: list[str] = []
+
+        silent_total = _silently_complete_historical_slots_at_startup(
+            slots=[slot],
+            runtime=runtime,
+            now=now,
+            log_fn=logs.append,
+        )
+
+        self.assertEqual(silent_total, 1)
+        self.assertEqual(slot.state, "DONE")
+        self.assertTrue(slot.end_notice_sent)
+        self.assertEqual(slot.ended_reason, "startup_historical_expired")
+        self.assertEqual(slot.active_sub_id, "")
+        self.assertFalse(slot.last_probe_is_live)
+        self.assertTrue(any("startup silent-completed historical slots=1" in line for line in logs))
+
+    def test_startup_silent_completion_keeps_slot_inside_post_end_guard_active(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime(2026, 3, 23, 12, 30, tzinfo=tz)
+        slot = _make_slot(
+            slot_id="slot-guard",
+            course_id=101,
+            start_at=now - timedelta(hours=2),
+            end_at=now - timedelta(minutes=5),
+        )
+        runtime = AutoRuntimeConfig(post_end_guard_minutes=15)
+        logs: list[str] = []
+
+        silent_total = _silently_complete_historical_slots_at_startup(
+            slots=[slot],
+            runtime=runtime,
+            now=now,
+            log_fn=logs.append,
+        )
+
+        self.assertEqual(silent_total, 0)
+        self.assertEqual(slot.state, "PENDING")
+        self.assertFalse(slot.end_notice_sent)
+        self.assertEqual(slot.ended_reason, "")
+        self.assertEqual(logs, [])
+
+    def test_startup_silent_completion_only_marks_historical_slots_in_mixed_schedule(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime(2026, 3, 23, 12, 30, tzinfo=tz)
+        historical_slot = _make_slot(
+            slot_id="slot-historical",
+            course_id=101,
+            start_at=now - timedelta(hours=3),
+            end_at=now - timedelta(hours=1),
+        )
+        future_slot = _make_slot(
+            slot_id="slot-future",
+            course_id=102,
+            start_at=now + timedelta(hours=1),
+            end_at=now + timedelta(hours=2),
+            course_title="课程B",
+            teacher="老师B",
+        )
+        runtime = AutoRuntimeConfig(post_end_guard_minutes=15)
+        logs: list[str] = []
+
+        silent_total = _silently_complete_historical_slots_at_startup(
+            slots=[historical_slot, future_slot],
+            runtime=runtime,
+            now=now,
+            log_fn=logs.append,
+        )
+
+        unfinished = [slot.slot_id for slot in (historical_slot, future_slot) if slot.state != "DONE"]
+        self.assertEqual(silent_total, 1)
+        self.assertEqual(historical_slot.state, "DONE")
+        self.assertTrue(historical_slot.end_notice_sent)
+        self.assertEqual(future_slot.state, "PENDING")
+        self.assertFalse(future_slot.end_notice_sent)
+        self.assertEqual(unfinished, ["slot-future"])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("startup silent-completed historical slots=1", logs[0])
+
+    def test_scheduler_exits_cleanly_when_all_slots_are_silently_completed_at_startup(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime(2026, 3, 23, 12, 30, tzinfo=tz)
+        slots = [
+            _make_slot(
+                slot_id="slot-historical-1",
+                course_id=101,
+                start_at=now - timedelta(hours=4),
+                end_at=now - timedelta(hours=2),
+            ),
+            _make_slot(
+                slot_id="slot-historical-2",
+                course_id=102,
+                start_at=now - timedelta(hours=3),
+                end_at=now - timedelta(hours=1),
+                course_title="课程B",
+                teacher="老师B",
+            ),
+        ]
+        runtime = AutoRuntimeConfig(post_end_guard_minutes=15)
+        scheduler, notifier, log_queue = _build_scheduler(slots=slots, runtime=runtime)
+
+        silent_total = _silently_complete_historical_slots_at_startup(
+            slots=slots,
+            runtime=runtime,
+            now=now,
+            log_fn=log_queue.log,
+        )
+        exit_code = scheduler.run()
+
+        self.assertEqual(silent_total, 2)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(notifier.sent, [])
+        self.assertTrue(any("startup silent-completed historical slots=2" in line for line in log_queue.lines))
+        self.assertTrue(any("all slots finished; exiting" in line for line in log_queue.lines))
+
+    def test_done_slot_is_not_probed_again(self) -> None:
+        scheduler, slot, _notifier = _build_scheduler_and_slot()
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        slot.state = "DONE"
+        slot.end_notice_sent = True
+        slot.ended_reason = "live_closed_after_end"
+        slot.active_sub_id = "1903390"
+
+        with (
+            mock.patch("src.live.auto_analysis.check_course_live_status") as live_check,
+            mock.patch.object(scheduler, "_start_analysis") as start_analysis,
+        ):
+            scheduler._tick_slot(slot, now=now)
+
+        live_check.assert_not_called()
+        start_analysis.assert_not_called()
+
+    def test_handle_live_probe_ignores_completed_slot(self) -> None:
+        scheduler, slot, _notifier = _build_scheduler_and_slot()
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        slot.state = "DONE"
+        slot.end_notice_sent = True
+        slot.ended_reason = "live_closed_after_end"
+
+        with mock.patch.object(scheduler, "_start_analysis") as start_analysis:
+            scheduler._handle_live_probe_result(
+                slot=slot,
+                now=now,
+                now_mono=10.0,
+                result=LiveCheckResult(
+                    course_id=slot.course_id,
+                    is_live=True,
+                    checked=True,
+                    attempts=1,
+                    elapsed_sec=0.1,
+                    last_error="",
+                    hint="",
+                    sub_id="1903390",
+                ),
+            )
+
+        start_analysis.assert_not_called()
 
     def test_probe_failure_alert_replaces_no_live_alert_when_probe_unavailable(self) -> None:
         scheduler, slot, notifier = _build_scheduler_and_slot()
@@ -228,7 +426,7 @@ class AnalysisProcessControllerTests(unittest.TestCase):
         ):
             controller.stop(reason="live_closed_after_end")
 
-        self.assertEqual(wait_calls, [20.0, 8.0, 2.0])
+        self.assertEqual(wait_calls, [130.0, 8.0, 2.0])
 
 
 if __name__ == "__main__":

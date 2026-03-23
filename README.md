@@ -219,6 +219,7 @@ python -m src.main auto-analysis --config config/auto_analysis.json
 - `scan` 区块仅做兼容保留，不再参与 `course_id` 映射推断。
 - `analysis_args` 为统一全局参数，不能包含 `course_id/sub_id`（由外壳运行时自动注入）。
 - 当 `analysis_args.tingwu_enabled=true` 时，`auto-analysis` 启动前会做听悟远端预检（鉴权探测 + OSS 上传/签名读/删除探针），任一步失败即启动失败。
+- 启动时若某个 slot 已经超过 `end + post_end_guard_minutes`，会被静默标记为历史课程并直接跳过，不再补发 `课程结束` 钉钉提醒。
 
 ### 4.4 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
 
