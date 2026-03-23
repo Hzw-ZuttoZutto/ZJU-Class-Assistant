@@ -151,9 +151,9 @@ class RealtimeInsightConfig:
     stt_stage_timeout_sec: float = 32.0
     stt_retry_count: int = 4
     stt_retry_interval_sec: float = 0.2
-    analysis_request_timeout_sec: float = 15.0
+    analysis_request_timeout_sec: float = 20.0
     analysis_stage_timeout_sec: float = 60.0
-    analysis_retry_count: int = 4
+    analysis_retry_count: int = 3
     analysis_retry_interval_sec: float = 0.2
     alert_threshold: int = 90
     poll_interval_sec: float = 1.0

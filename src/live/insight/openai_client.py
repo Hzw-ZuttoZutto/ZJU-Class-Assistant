@@ -53,6 +53,7 @@ class OpenAIInsightClient:
         kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": max(2.0, float(timeout_sec)),
+            "max_retries": 0,
         }
         normalized_base_url = (base_url or "").strip()
         if normalized_base_url:

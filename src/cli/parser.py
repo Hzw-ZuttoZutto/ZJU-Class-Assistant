@@ -128,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument(
         "--rt-analysis-request-timeout-sec",
         type=float,
-        default=15.0,
+        default=20.0,
         help="Per-request timeout seconds for realtime analysis stage",
     )
     analysis.add_argument(
@@ -140,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument(
         "--rt-analysis-retry-count",
         type=int,
-        default=4,
+        default=3,
         help="Total attempts allowed for realtime analysis stage",
     )
     analysis.add_argument(
@@ -377,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     mic_listen.add_argument(
         "--rt-analysis-request-timeout-sec",
         type=float,
-        default=15.0,
+        default=20.0,
         help="Per-request timeout seconds for realtime analysis stage",
     )
     mic_listen.add_argument(
@@ -389,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     mic_listen.add_argument(
         "--rt-analysis-retry-count",
         type=int,
-        default=4,
+        default=3,
         help="Total attempts allowed for realtime analysis stage",
     )
     mic_listen.add_argument(

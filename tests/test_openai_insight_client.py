@@ -28,9 +28,10 @@ class _FakeResponses:
 
 
 class _FakeOpenAI:
-    def __init__(self, *, api_key: str, timeout: float) -> None:
+    def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
         self.api_key = api_key
         self.timeout = timeout
+        self.max_retries = max_retries
         self.audio = _FakeAudio()
         self.responses = _FakeResponses(
             '{"important": true, "summary": "老师刚布置了微积分作业", '
@@ -75,7 +76,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 raise TimeoutError("transcribe timeout")
 
         class _TimeoutOpenAI:
-            def __init__(self, *, api_key: str, timeout: float) -> None:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
                 self.audio = type("Audio", (), {"transcriptions": _TimeoutAudioTranscriptions()})()
                 self.responses = _FakeResponses("{}")
 
@@ -96,7 +97,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
 
     def test_analyze_invalid_json(self) -> None:
         class _BadOpenAI:
-            def __init__(self, *, api_key: str, timeout: float) -> None:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
                 self.audio = _FakeAudio()
                 self.responses = _FakeResponses("not-json")
 
@@ -133,7 +134,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 )()
 
         class _FallbackOpenAI:
-            def __init__(self, *, api_key: str, timeout: float) -> None:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
                 self.audio = _FakeAudio()
                 self.responses = _FallbackResponses()
 
@@ -165,6 +166,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 base_url="https://aihubmix.com/v1",
             )
         self.assertEqual(captured.get("base_url"), "https://aihubmix.com/v1")
+        self.assertEqual(captured.get("max_retries"), 0)
 
     def test_analyze_debug_hook_captures_each_attempt(self) -> None:
         class _Resp:
@@ -194,7 +196,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 )
 
         class _DebugOpenAI:
-            def __init__(self, *, api_key: str, timeout: float) -> None:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
                 self.audio = _FakeAudio()
                 self.responses = _DebugResponses()
 
@@ -243,7 +245,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 )()
 
         class _CaptureOpenAI:
-            def __init__(self, *, api_key: str, timeout: float) -> None:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
                 self.audio = _FakeAudio()
                 self.responses = _CaptureResponses()
 
@@ -288,7 +290,7 @@ class OpenAIInsightClientTests(unittest.TestCase):
                 )()
 
         class _ValueFallbackOpenAI:
-            def __init__(self, *, api_key: str, timeout: float) -> None:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
                 self.audio = _FakeAudio()
                 self.responses = _ValueFallbackResponses()
 
