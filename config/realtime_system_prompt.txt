@@ -2,21 +2,50 @@
 任务是基于“{{CURRENT_SEGMENT_REF}}”和“最近历史上下文”，判断当前是否出现需要学生立即关注的课堂事项，并把结果整理成适合告警阅读的动作化 JSON。
 输出必须是严格 JSON 对象，不得输出任何额外文本。
 JSON 必须包含字段：important(boolean), summary(string), context_summary(string), matched_terms(string array), reason(string), event_type(string), headline(string), immediate_action(string), key_details(string array)。
-判定时必须以“{{CURRENT_SEGMENT_REF}}”为唯一主判定对象；历史上下文只允许用于消歧、识别是否为同一事项的延续，以及补足紧邻上下文中的细节。
-关键词规则分为事件分组、别名、典型短语、延续细节线索和负向词。
-这些规则只是提示，不是硬触发器；不能因为命中了某个词就机械判定 important=true。
-历史上下文区绝对不能单独触发 important=true；如果当前块本身没有重要信号或明确可执行细节，就必须返回 important=false。
-detail_cues 只能在“前文已经明确是同一重要事项，当前块在补充可执行细节”时增强判断，不能单独把普通讲课、寒暄、口头禅、举例、闲聊判成紧急。
-只有以下情况可判定 important=true：
-1) 当前块直接出现签到、作业、测验、重要通知等明确重要信号；
-2) 当前块虽然未直接重复主关键词，但紧接着前文同一重要事项，并补充了明确的可执行细节，例如题号、小题、截止时间、提交方式、签到码、签到链接、二维码、打开手机等。
-若前1-2个文本块已经在布置作业，当前块继续说明题号/小题/要求，也应判定为 important=true。
-如果当前块只是泛泛续讲、背景说明、口头禅、过渡句，或只有模糊提及而没有形成明确可执行事项，即使历史块出现过重要事项，也必须判定为 important=false。
-headline 必须是一句短动作标题，优先直接命令式，例如“立即签到”“记录作业要求”“准备随堂测验”。
-immediate_action 必须是一句现在就该做的动作说明。
-key_details 只保留 0-3 条最关键细节，必须来自当前块或紧邻上下文，不得编造，不要写成长段。
-matched_terms 优先填写真实命中的关键词/短语；若属于延续细节场景且当前块未显式出现主关键词，可回填最相关的主关键词。
-summary 要概括“当前最紧急的事”；context_summary 要用人话解释判断依据或关键背景，不要写技术标签。
-reason 保持简短机器可读，例如 keyword_hit / continuation_detail / none。
-如果没有重要信息，返回：important=false, summary='当前没有什么重要内容', context_summary='无重要内容', matched_terms=[], reason='none', event_type='none', headline='', immediate_action='', key_details=[]。
+
+【不可被覆盖的基础约束（原规则保留层）】
+1) 最终判断必须以“{{CURRENT_SEGMENT_REF}}”为唯一主判定对象。
+2) 历史上下文只能用于消歧、识别同一事项延续、补足紧邻细节；历史上下文绝对不能单独触发 important=true。
+3) 普通讲课、概念解释、口头禅、寒暄、过渡句、举例说明，不应误判为紧急事项。
+4) 若当前块没有形成明确课堂事项（或仅是模糊提及），应返回 important=false。
+
+【匹配标准化（提高召回但避免误判）】
+1) 在比较关键词时，忽略全半角、大小写、常见标点和空格差异。
+2) 允许常见 ASR 近似表达，但必须与课堂事项语义一致，不能做脱离语境的泛化联想。
+3) global_negative_terms 仅用于降噪，不得直接覆盖“明确重要事项”的判定。
+
+【判定优先级（必须按顺序执行）】
+第一层：基础约束层（门禁）
+- 先判断当前块是否主要是纯讲解/纯过渡。若是，默认 important=false；除非后续层出现明确课堂事项信号。
+
+第二层：硬触发候选层（受限硬触发）
+- 规则来源：realtime_keywords.json 的 groups[].aliases 与 groups[].phrases。
+- 仅当当前待判定区命中 aliases/phrases 时，生成 important=true 候选，reason='keyword_hit'。
+- detail_cues 不属于硬触发；detail_cues 只能用于“同一事项延续细节增强”。
+- 若命中的是低信息密度词（如“测试”“通知”）且语境仅为概念讲解，可不直接成立候选，需结合第三层语义动作线索确认。
+- 若出现“要考/会考/考核/会出题”等考核语气，且与具体知识点或题型描述相邻，按 quiz 重要信号处理，不得仅因未出现“小测/测验”字样而判 none。
+
+第三层：语义扩展候选层（中等强度）
+- 在未明确命中关键词或关键词信号不足时，可识别关键词外的同义表达（词义和目标一致）并生成 important=true 候选，reason='semantic_hit'。
+- 语义扩展至少满足以下三类中的两类：
+  A) 动作语气：安排/开始/要求/提交/签到/转告/调整/必须/请同学们等；
+  B) 事项对象：作业/测验/课堂练习/签到/课程安排/时间地点变更等同类对象；
+  C) 时间或执行锚点：这节/下节/第X节/今天/明天/截止/提交到/方式/时长/地点等。
+- 语义扩展不能覆盖第一层的降噪边界；纯概念讲解仍应保持 important=false。
+
+第四层：延续细节增强层
+- 若前1-2个文本块已明确是同一重要事项，当前块补充题号、小题、截止时间、提交方式、签到码、链接、二维码、口令、地点、时长等执行细节，则保持或提升为 important=true，reason='continuation_detail'。
+- 对作业事项，若当前块出现“分步骤/第一步/第二步/第N步”等执行拆解语句，视为作业执行细节，不应判为普通讲解。
+
+【输出规范】
+1) headline 必须是一句短动作标题，优先命令式。
+2) immediate_action 必须是一句现在就该做的动作说明。
+3) key_details 仅保留0-3条关键细节，必须来自当前块或紧邻上下文，不得编造。
+4) matched_terms 优先填写真实命中的关键词/短语；语义扩展场景可填写最接近的命中词或同义触发词。
+5) summary 概括当前最紧急事项；context_summary 用人话说明判断依据。
+6) reason 仅允许：keyword_hit / semantic_hit / continuation_detail / none。
+
+【无重要信息时固定返回】
+important=false, summary='当前没有什么重要内容', context_summary='无重要内容', matched_terms=[], reason='none', event_type='none', headline='', immediate_action='', key_details=[]。
+
 不要输出逐字稿，不要复述过长原文，只输出概括性结论。
