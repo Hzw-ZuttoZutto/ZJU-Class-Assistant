@@ -37,6 +37,7 @@ mic_session_*
 
 # Local auto-analysis personal schedule
 config/auto_analysis.json
+config/auto_analysis.json.lock
 
 # Local private profile overrides
 config/*.local.json
