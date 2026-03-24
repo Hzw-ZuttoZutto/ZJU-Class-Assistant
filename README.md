@@ -598,3 +598,47 @@ python -m json.tool config/realtime_hotwords.json > /dev/null
 
 - `keywords` 文件异常时，会打印 `using empty rules`（流程不崩，但规则失效）。
 - stream 成功加载热词时，会打印 `loaded hotwords file ... items=<N>`。
+
+### 7.5 本地隐私配置（推荐）
+
+为了兼顾开源协作与个人使用，建议把私有配置放到 `config/*.local.json`：
+
+- `config/realtime_keywords.local.json`
+- `config/realtime_hotwords.local.json`
+- `config/auto_analysis.local.json`
+
+这些文件默认应只在本地使用，并通过 `.gitignore` 忽略，不进入 Git 历史。
+
+`analysis` 示例：
+
+```bash
+python -m src.main analysis \
+  --course-id 12345 \
+  --sub-id 1 \
+  --rt-asr-model fun-asr-realtime \
+  --rt-keywords-file config/realtime_keywords.local.json \
+  --rt-hotwords-file config/realtime_hotwords.local.json \
+  --rt-dingtalk-enabled
+```
+
+`mic-listen` 示例：
+
+```bash
+python -m src.main mic-listen \
+  --rt-asr-model fun-asr-realtime \
+  --rt-keywords-file config/realtime_keywords.local.json \
+  --rt-hotwords-file config/realtime_hotwords.local.json
+```
+
+`auto-analysis` 示例：
+
+```bash
+python -m src.main auto-analysis --config config/auto_analysis.local.json
+```
+
+日常同步建议：
+
+```bash
+git pull --rebase origin main
+git push origin main
+```
