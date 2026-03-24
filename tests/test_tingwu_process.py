@@ -7,7 +7,13 @@ from unittest import mock
 
 from src.common.billing import reset_billing_alert_cooldown_for_tests
 from src.common.account import TingwuSettings
-from src.live.tingwu.process import TingwuJob, _render_summary_markdown, _run_tingwu_job, run_tingwu_remote_preflight
+from src.live.tingwu.process import (
+    _TRANSIENT_RETRY_MAX_ATTEMPTS,
+    TingwuJob,
+    _render_summary_markdown,
+    _run_tingwu_job,
+    run_tingwu_remote_preflight,
+)
 
 
 class _FakeResp:
@@ -107,6 +113,19 @@ class TingwuProcessTests(unittest.TestCase):
             oss_endpoint="oss-cn-beijing.aliyuncs.com",
         )
 
+    def _build_job(self, root: Path) -> TingwuJob:
+        audio = root / "audio.mp3"
+        audio.write_bytes(b"mp3")
+        return TingwuJob(
+            session_dir=root,
+            audio_file=audio,
+            course_title="课程A",
+            teacher_name="老师A",
+            started_at_iso="2026-03-11T00:00:00+08:00",
+            poll_interval_sec=5.0,
+            max_wait_hours=1.0,
+        )
+
     def test_run_tingwu_job_success(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -189,6 +208,397 @@ class TingwuProcessTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertTrue((root / "tingwu_process_error.json").exists())
             self.assertGreaterEqual(len(notifier.sent), 1)
+
+    def test_run_tingwu_job_retries_transient_create_task_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _RetryCreateOpenApiClient(_FakeOpenApiClient):
+                create_attempts = 0
+
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    _ = (app_key, file_url, task_key)
+                    type(self).create_attempts += 1
+                    if type(self).create_attempts < 3:
+                        raise RuntimeError("http 503 service unavailable")
+                    return {"Data": {"TaskId": "task-1"}}
+
+            summary_payload = {"summary": "这是摘要"}
+            chapter_payload = {"chapters": [{"title": "第一章"}]}
+            responses = {
+                "https://example.test/summary": summary_payload,
+                "https://example.test/chapter": chapter_payload,
+            }
+
+            def _session_factory(pool_size: int = 8):  # noqa: ARG001
+                class _Session:
+                    def get(self, url: str, timeout: float = 30.0) -> _FakeResp:  # noqa: ARG002
+                        return _FakeResp(payload=responses[url], content=b"")
+
+                return _Session()
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _RetryCreateOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _FakeOssClient),
+                mock.patch("src.live.tingwu.process.get_thread_session", side_effect=_session_factory),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 0)
+            self.assertEqual(_RetryCreateOpenApiClient.create_attempts, 3)
+            self.assertTrue(any("retry phase=openapi_create_task" in line for line in logger.lines))
+
+    def test_run_tingwu_job_retries_transient_poll_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _RetryPollOpenApiClient(_FakeOpenApiClient):
+                def get_task_info(self, task_id: str) -> dict:
+                    _ = task_id
+                    self.poll_count += 1
+                    if self.poll_count == 1:
+                        raise RuntimeError("Connection aborted by peer")
+                    if self.poll_count == 2:
+                        return {"Data": {"TaskStatus": "RUNNING"}}
+                    return {
+                        "Data": {
+                            "TaskStatus": "COMPLETED",
+                            "Result": {
+                                "SummaryUrl": "https://example.test/summary",
+                                "ChapterUrl": "https://example.test/chapter",
+                            },
+                        }
+                    }
+
+            summary_payload = {"summary": "这是摘要"}
+            chapter_payload = {"chapters": [{"title": "第一章"}]}
+            responses = {
+                "https://example.test/summary": summary_payload,
+                "https://example.test/chapter": chapter_payload,
+            }
+
+            def _session_factory(pool_size: int = 8):  # noqa: ARG001
+                class _Session:
+                    def get(self, url: str, timeout: float = 30.0) -> _FakeResp:  # noqa: ARG002
+                        return _FakeResp(payload=responses[url], content=b"")
+
+                return _Session()
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _RetryPollOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _FakeOssClient),
+                mock.patch("src.live.tingwu.process.get_thread_session", side_effect=_session_factory),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 0)
+            self.assertTrue(any("retry phase=openapi_poll" in line for line in logger.lines))
+
+    def test_run_tingwu_job_retries_transient_result_download_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+            summary_attempts = {"count": 0}
+
+            def _session_factory(pool_size: int = 8):  # noqa: ARG001
+                class _Session:
+                    def get(self, url: str, timeout: float = 30.0) -> _FakeResp:  # noqa: ARG002
+                        if url.endswith("/summary"):
+                            summary_attempts["count"] += 1
+                            if summary_attempts["count"] == 1:
+                                return _FakeResp(status_code=503, payload={"error": "busy"})
+                            return _FakeResp(payload={"summary": "这是摘要"}, content=b"")
+                        if url.endswith("/chapter"):
+                            return _FakeResp(payload={"chapters": [{"title": "第一章"}]}, content=b"")
+                        raise KeyError(url)
+
+                return _Session()
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _FakeOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _FakeOssClient),
+                mock.patch("src.live.tingwu.process.get_thread_session", side_effect=_session_factory),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 0)
+            self.assertEqual(summary_attempts["count"], 2)
+            self.assertTrue(any("retry phase=result_download" in line for line in logger.lines))
+
+    def test_run_tingwu_job_non_transient_create_error_no_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _NonTransientCreateOpenApiClient(_FakeOpenApiClient):
+                create_attempts = 0
+
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    _ = (app_key, file_url, task_key)
+                    type(self).create_attempts += 1
+                    raise RuntimeError("invalid app key")
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _NonTransientCreateOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _FakeOssClient),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 1)
+            self.assertEqual(_NonTransientCreateOpenApiClient.create_attempts, 1)
+            self.assertFalse(any("retry phase=openapi_create_task" in line for line in logger.lines))
+
+    def test_run_tingwu_job_429_exhausts_retry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _RateLimitOpenApiClient(_FakeOpenApiClient):
+                create_attempts = 0
+
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    _ = (app_key, file_url, task_key)
+                    type(self).create_attempts += 1
+                    raise RuntimeError("http 429 too many requests")
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _RateLimitOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _FakeOssClient),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(job=job, logger=logger, notifier=notifier)  # type: ignore[arg-type]
+
+            self.assertEqual(code, 1)
+            self.assertEqual(_RateLimitOpenApiClient.create_attempts, _TRANSIENT_RETRY_MAX_ATTEMPTS)
+            self.assertTrue(any("retry phase=openapi_create_task" in line for line in logger.lines))
+
+    def test_run_tingwu_job_resume_ongoing_task(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _ResumeOpenApiClient:
+                create_calls = 0
+
+                def __init__(self, _settings: TingwuSettings) -> None:
+                    self.resume_poll = 0
+
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    _ = (app_key, file_url, task_key)
+                    type(self).create_calls += 1
+                    return {"Data": {"TaskId": "task-new"}}
+
+                def get_task_info(self, task_id: str) -> dict:
+                    if task_id != "resume-task":
+                        raise RuntimeError(f"unexpected task_id: {task_id}")
+                    self.resume_poll += 1
+                    if self.resume_poll == 1:
+                        return {"Data": {"TaskStatus": "RUNNING"}}
+                    return {
+                        "Data": {
+                            "TaskStatus": "COMPLETED",
+                            "Result": {
+                                "SummaryUrl": "https://example.test/summary",
+                                "ChapterUrl": "https://example.test/chapter",
+                            },
+                        }
+                    }
+
+            class _TrackingOssClient(_FakeOssClient):
+                upload_calls = 0
+
+                def upload_file_multipart(
+                    self, *, object_key: str, file_path: Path, part_size: int = 8 * 1024 * 1024
+                ) -> None:
+                    type(self).upload_calls += 1
+                    super().upload_file_multipart(object_key=object_key, file_path=file_path, part_size=part_size)
+
+            summary_payload = {"summary": "这是摘要"}
+            chapter_payload = {"chapters": [{"title": "第一章"}]}
+            responses = {
+                "https://example.test/summary": summary_payload,
+                "https://example.test/chapter": chapter_payload,
+            }
+
+            def _session_factory(pool_size: int = 8):  # noqa: ARG001
+                class _Session:
+                    def get(self, url: str, timeout: float = 30.0) -> _FakeResp:  # noqa: ARG002
+                        return _FakeResp(payload=responses[url], content=b"")
+
+                return _Session()
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _ResumeOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _TrackingOssClient),
+                mock.patch("src.live.tingwu.process.get_thread_session", side_effect=_session_factory),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(  # type: ignore[arg-type]
+                    job=job,
+                    logger=logger,
+                    notifier=notifier,
+                    resume_task_id="resume-task",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(_ResumeOpenApiClient.create_calls, 0)
+            self.assertEqual(_TrackingOssClient.upload_calls, 0)
+
+    def test_run_tingwu_job_resume_completed_task(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _ResumeCompletedOpenApiClient:
+                create_calls = 0
+
+                def __init__(self, _settings: TingwuSettings) -> None:
+                    pass
+
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    _ = (app_key, file_url, task_key)
+                    type(self).create_calls += 1
+                    return {"Data": {"TaskId": "task-new"}}
+
+                def get_task_info(self, task_id: str) -> dict:
+                    if task_id != "resume-task":
+                        raise RuntimeError(f"unexpected task_id: {task_id}")
+                    return {
+                        "Data": {
+                            "TaskStatus": "COMPLETED",
+                            "Result": {
+                                "SummaryUrl": "https://example.test/summary",
+                                "ChapterUrl": "https://example.test/chapter",
+                            },
+                        }
+                    }
+
+            class _TrackingOssClient(_FakeOssClient):
+                upload_calls = 0
+
+                def upload_file_multipart(
+                    self, *, object_key: str, file_path: Path, part_size: int = 8 * 1024 * 1024
+                ) -> None:
+                    type(self).upload_calls += 1
+                    super().upload_file_multipart(object_key=object_key, file_path=file_path, part_size=part_size)
+
+            summary_payload = {"summary": "这是摘要"}
+            chapter_payload = {"chapters": [{"title": "第一章"}]}
+            responses = {
+                "https://example.test/summary": summary_payload,
+                "https://example.test/chapter": chapter_payload,
+            }
+
+            def _session_factory(pool_size: int = 8):  # noqa: ARG001
+                class _Session:
+                    def get(self, url: str, timeout: float = 30.0) -> _FakeResp:  # noqa: ARG002
+                        return _FakeResp(payload=responses[url], content=b"")
+
+                return _Session()
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _ResumeCompletedOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _TrackingOssClient),
+                mock.patch("src.live.tingwu.process.get_thread_session", side_effect=_session_factory),
+            ):
+                code = _run_tingwu_job(  # type: ignore[arg-type]
+                    job=job,
+                    logger=logger,
+                    notifier=notifier,
+                    resume_task_id="resume-task",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(_ResumeCompletedOpenApiClient.create_calls, 0)
+            self.assertEqual(_TrackingOssClient.upload_calls, 0)
+
+    def test_run_tingwu_job_resume_missing_task_fallback_create_new(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job = self._build_job(root)
+            logger = _FakeLogger()
+            notifier = _FakeNotifier()
+
+            class _ResumeMissingOpenApiClient(_FakeOpenApiClient):
+                create_calls = 0
+
+                def create_task(self, *, app_key: str, file_url: str, task_key: str) -> dict:
+                    type(self).create_calls += 1
+                    return super().create_task(app_key=app_key, file_url=file_url, task_key=task_key)
+
+                def get_task_info(self, task_id: str) -> dict:
+                    if task_id == "resume-missing":
+                        raise RuntimeError("task not found")
+                    return super().get_task_info(task_id)
+
+            class _TrackingOssClient(_FakeOssClient):
+                upload_calls = 0
+
+                def upload_file_multipart(
+                    self, *, object_key: str, file_path: Path, part_size: int = 8 * 1024 * 1024
+                ) -> None:
+                    type(self).upload_calls += 1
+                    super().upload_file_multipart(object_key=object_key, file_path=file_path, part_size=part_size)
+
+            summary_payload = {"summary": "这是摘要"}
+            chapter_payload = {"chapters": [{"title": "第一章"}]}
+            responses = {
+                "https://example.test/summary": summary_payload,
+                "https://example.test/chapter": chapter_payload,
+            }
+
+            def _session_factory(pool_size: int = 8):  # noqa: ARG001
+                class _Session:
+                    def get(self, url: str, timeout: float = 30.0) -> _FakeResp:  # noqa: ARG002
+                        return _FakeResp(payload=responses[url], content=b"")
+
+                return _Session()
+
+            with (
+                mock.patch("src.live.tingwu.process.resolve_tingwu_settings", return_value=(self._settings(), "")),
+                mock.patch("src.live.tingwu.process.TingwuOpenApiClient", _ResumeMissingOpenApiClient),
+                mock.patch("src.live.tingwu.process.TingwuOssClient", _TrackingOssClient),
+                mock.patch("src.live.tingwu.process.get_thread_session", side_effect=_session_factory),
+                mock.patch("src.live.tingwu.process.time.sleep", return_value=None),
+            ):
+                code = _run_tingwu_job(  # type: ignore[arg-type]
+                    job=job,
+                    logger=logger,
+                    notifier=notifier,
+                    resume_task_id="resume-missing",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(_ResumeMissingOpenApiClient.create_calls, 1)
+            self.assertEqual(_TrackingOssClient.upload_calls, 1)
+            self.assertTrue(any("fallback create new task" in line for line in logger.lines))
 
     def test_remote_preflight_success(self) -> None:
         with (

@@ -227,6 +227,22 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "tingwu-process")
         self.assertEqual(args.job_file, "/tmp/tingwu_job.json")
+        self.assertEqual(args.resume_task_id, "")
+
+    def test_tingwu_process_args_with_resume_task_id(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "tingwu-process",
+                "--job-file",
+                "/tmp/tingwu_job.json",
+                "--resume-task-id",
+                "task-abc",
+            ]
+        )
+        self.assertEqual(args.command, "tingwu-process")
+        self.assertEqual(args.job_file, "/tmp/tingwu_job.json")
+        self.assertEqual(args.resume_task_id, "task-abc")
 
 
 if __name__ == "__main__":

@@ -6,12 +6,14 @@ import hashlib
 import hmac
 import json
 import os
+import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import which
-from typing import Any
+from typing import Any, Callable, TypeVar
 from urllib.parse import quote_plus
 
 from src.common.account import TingwuSettings, resolve_dingtalk_bot_settings, resolve_tingwu_settings
@@ -26,6 +28,55 @@ from src.common.http import get_thread_session
 _TINGWU_ENDPOINT = "tingwu.cn-beijing.aliyuncs.com"
 _TINGWU_VERSION = "2023-09-30"
 _RESULT_DIR_NAME = "tingwu_results"
+_TRANSIENT_RETRY_MAX_ATTEMPTS = 5
+_TRANSIENT_RETRY_BASE_SEC = 0.8
+_TRANSIENT_RETRY_MAX_SEC = 8.0
+_TASK_STATUS_SUCCESS = {"COMPLETED", "SUCCESS", "SUCCEEDED"}
+_TASK_STATUS_FAILED = {"FAILED", "ERROR", "CANCELED", "CANCELLED"}
+_TASK_NOT_FOUND_SIGNALS = (
+    "notfound",
+    "task not found",
+    "task_not_found",
+    "invalidtask",
+    "invalid_task",
+    "does not exist",
+    "404",
+)
+_TRANSIENT_TEXT_SIGNALS = (
+    "connection aborted",
+    "remote disconnected",
+    "remotedisconnected",
+    "remote end closed connection",
+    "connection reset",
+    "connection reset by peer",
+    "connection refused",
+    "network is unreachable",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "read timeout",
+    "connect timeout",
+    "proxy error",
+    "ssl error",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "too many requests",
+    "rate limit",
+    "429",
+)
+_TRANSIENT_CLASS_NAME_HINTS = (
+    "timeout",
+    "connectionerror",
+    "connecttimeout",
+    "readtimeout",
+    "chunkedencodingerror",
+    "remotedisconnected",
+    "protocolerror",
+)
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -304,6 +355,7 @@ def run_tingwu_remote_preflight(*, timeout_sec: float = 8.0) -> tuple[bool, str]
 
 def run_tingwu_process(args: argparse.Namespace) -> int:
     job_file = Path(str(getattr(args, "job_file", "") or "")).expanduser().resolve()
+    resume_task_id = str(getattr(args, "resume_task_id", "") or "").strip()
     if not job_file.exists():
         print(f"Tingwu process failed: job file not found: {job_file}")
         return 1
@@ -314,58 +366,120 @@ def run_tingwu_process(args: argparse.Namespace) -> int:
         return 1
     logger = _WorkerLogger(job.session_dir / "tingwu_process.log")
     notifier = _build_notifier(logger=logger)
-    return _run_tingwu_job(job=job, logger=logger, notifier=notifier)
+    return _run_tingwu_job(
+        job=job,
+        logger=logger,
+        notifier=notifier,
+        resume_task_id=resume_task_id,
+    )
 
 
-def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTalkMarkdownSender | None) -> int:
+def _run_tingwu_job(
+    *,
+    job: TingwuJob,
+    logger: _WorkerLogger,
+    notifier: _DingTalkMarkdownSender | None,
+    resume_task_id: str = "",
+) -> int:
     error_path = job.session_dir / "tingwu_process_error.json"
     phase = "startup"
     try:
+        if error_path.exists():
+            try:
+                error_path.unlink()
+            except Exception:
+                pass
         if not job.audio_file.exists() or job.audio_file.stat().st_size <= 0:
             raise RuntimeError(f"audio file missing or empty: {job.audio_file}")
         settings, settings_error = resolve_tingwu_settings()
         if settings is None:
             raise RuntimeError(settings_error)
 
-        object_key = _build_object_key(job=job)
-        logger.log(f"[tingwu] upload start object_key={object_key}")
-        phase = "oss_upload"
-        oss_client = TingwuOssClient(settings)
-        oss_client.upload_file_multipart(object_key=object_key, file_path=job.audio_file)
-        phase = "oss_sign_url"
-        signed_url = oss_client.sign_get_url(object_key=object_key, expires_sec=24 * 3600)
-
         phase = "openapi_init"
         openapi_client = TingwuOpenApiClient(settings)
-        task_key = _build_task_key(job=job)
-        phase = "openapi_create_task"
-        create_payload = openapi_client.create_task(
-            app_key=settings.app_key,
-            file_url=signed_url,
-            task_key=task_key,
-        )
-        task_id = _extract_task_id(create_payload)
+        task_id = str(resume_task_id or "").strip()
+        final_info: dict[str, Any] | None = None
+        seeded_poll_info: dict[str, Any] | None = None
+
+        if task_id:
+            phase = "openapi_resume_check"
+            logger.log(f"[tingwu] resume start task_id={task_id}")
+            try:
+                resume_info = _execute_with_retry(
+                    op_name="resume_get_task_info",
+                    phase=phase,
+                    logger=logger,
+                    fn=lambda: openapi_client.get_task_info(task_id),
+                )
+            except Exception as exc:
+                message = _format_exception(exc)
+                if _is_task_not_found_error(message):
+                    logger.log(f"[tingwu] resume unavailable task_id={task_id}; fallback create new task")
+                    task_id = ""
+                else:
+                    raise
+            else:
+                resume_status = _extract_task_status(resume_info).upper()
+                logger.log(f"[tingwu] resume task_id={task_id} status={resume_status or 'UNKNOWN'}")
+                if resume_status in _TASK_STATUS_SUCCESS:
+                    final_info = resume_info
+                elif resume_status in _TASK_STATUS_FAILED:
+                    logger.log(f"[tingwu] resume terminal status={resume_status}; fallback create new task")
+                    task_id = ""
+                else:
+                    seeded_poll_info = resume_info
+
         if not task_id:
-            raise RuntimeError(f"create task response missing task id: {json.dumps(create_payload, ensure_ascii=False)}")
-        logger.log(f"[tingwu] task created task_id={task_id}")
-        _notify_submit(
-            notifier=notifier,
-            job=job,
-            task_id=task_id,
-            logger=logger,
-        )
+            object_key = _build_object_key(job=job)
+            logger.log(f"[tingwu] upload start object_key={object_key}")
+            phase = "oss_upload"
+            oss_client = TingwuOssClient(settings)
+            oss_client.upload_file_multipart(object_key=object_key, file_path=job.audio_file)
+            phase = "oss_sign_url"
+            signed_url = oss_client.sign_get_url(object_key=object_key, expires_sec=24 * 3600)
+
+            task_key = _build_task_key(job=job)
+            phase = "openapi_create_task"
+            create_payload = _execute_with_retry(
+                op_name="create_task",
+                phase=phase,
+                logger=logger,
+                fn=lambda: openapi_client.create_task(
+                    app_key=settings.app_key,
+                    file_url=signed_url,
+                    task_key=task_key,
+                ),
+            )
+            task_id = _extract_task_id(create_payload)
+            if not task_id:
+                raise RuntimeError(f"create task response missing task id: {json.dumps(create_payload, ensure_ascii=False)}")
+            logger.log(f"[tingwu] task created task_id={task_id}")
+            _notify_submit(
+                notifier=notifier,
+                job=job,
+                task_id=task_id,
+                logger=logger,
+            )
 
         deadline = time.monotonic() + max(1800.0, float(job.max_wait_hours) * 3600.0)
-        final_info: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
+        while final_info is None and time.monotonic() < deadline:
             phase = "openapi_poll"
-            info = openapi_client.get_task_info(task_id)
+            if seeded_poll_info is not None:
+                info = seeded_poll_info
+                seeded_poll_info = None
+            else:
+                info = _execute_with_retry(
+                    op_name="get_task_info",
+                    phase=phase,
+                    logger=logger,
+                    fn=lambda: openapi_client.get_task_info(task_id),
+                )
             status = _extract_task_status(info).upper()
             logger.log(f"[tingwu] poll task_id={task_id} status={status or 'UNKNOWN'}")
-            if status in {"COMPLETED", "SUCCESS", "SUCCEEDED"}:
+            if status in _TASK_STATUS_SUCCESS:
                 final_info = info
                 break
-            if status in {"FAILED", "ERROR", "CANCELED", "CANCELLED"}:
+            if status in _TASK_STATUS_FAILED:
                 raise RuntimeError(f"tingwu task failed status={status} payload={json.dumps(info, ensure_ascii=False)}")
             time.sleep(max(5.0, float(job.poll_interval_sec)))
 
@@ -393,7 +507,7 @@ def _run_tingwu_job(*, job: TingwuJob, logger: _WorkerLogger, notifier: _DingTal
         return 0
     except Exception as exc:
         message = _format_exception(exc)
-        logger.log(f"[tingwu] process failed: {message}")
+        logger.log(f"[tingwu] process failed phase={phase} error={message}")
         _write_error_file(error_path=error_path, job=job, error=message)
         issue = detect_billing_issue(
             service_hint=_phase_service_hint(phase),
@@ -429,16 +543,110 @@ def _download_result_jsons(*, info: dict[str, Any], result_dir: Path, logger: _W
     out: dict[str, Any] = {}
     for key, url in sorted(url_map.items()):
         logger.log(f"[tingwu] download result key={key}")
-        resp = get_thread_session(pool_size=8).get(url, timeout=30)
-        resp.raise_for_status()
-        try:
-            payload = resp.json()
-        except Exception as exc:
-            raise RuntimeError(f"result is not valid json key={key} url={url}: {exc}") from exc
+        payload = _execute_with_retry(
+            op_name=f"download_result:{key}",
+            phase="result_download",
+            logger=logger,
+            fn=lambda: _download_result_payload(url=url, key=key),
+        )
         file_path = result_dir / f"{key}.json"
         file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         out[key] = payload
     return out
+
+
+def _download_result_payload(*, url: str, key: str) -> Any:
+    resp = get_thread_session(pool_size=8).get(url, timeout=30)
+    resp.raise_for_status()
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"result is not valid json key={key} url={url}: {exc}") from exc
+    return payload
+
+
+def _execute_with_retry(
+    *,
+    op_name: str,
+    phase: str,
+    logger: _WorkerLogger,
+    fn: Callable[[], _T],
+    max_attempts: int = _TRANSIENT_RETRY_MAX_ATTEMPTS,
+    base_sec: float = _TRANSIENT_RETRY_BASE_SEC,
+    max_sec: float = _TRANSIENT_RETRY_MAX_SEC,
+) -> _T:
+    attempts = max(1, int(max_attempts))
+    base_wait = max(0.0, float(base_sec))
+    max_wait = max(base_wait, float(max_sec))
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt >= attempts:
+                raise
+            message = _format_exception(exc)
+            if not _is_retryable_transient_error(exc=exc, message=message):
+                raise
+            wait_sec = _compute_retry_wait_sec(attempt=attempt, base_sec=base_wait, max_sec=max_wait)
+            logger.log(
+                f"[tingwu] retry phase={phase} op={op_name} attempt={attempt}/{attempts} "
+                f"wait={wait_sec:.2f}s error={_compact_text(message, max_len=220)}"
+            )
+            time.sleep(wait_sec)
+    raise RuntimeError(f"retry exhausted unexpectedly phase={phase} op={op_name}")
+
+
+def _compute_retry_wait_sec(*, attempt: int, base_sec: float, max_sec: float) -> float:
+    raw = max(0.0, float(base_sec)) * (2 ** max(0, int(attempt) - 1))
+    capped = min(max(0.0, float(max_sec)), raw)
+    if capped <= 0:
+        return 0.0
+    return max(0.0, capped * random.uniform(0.85, 1.15))
+
+
+def _is_retryable_transient_error(*, exc: Exception, message: str) -> bool:
+    low = str(message or "").lower()
+    if any(token in low for token in _TRANSIENT_TEXT_SIGNALS):
+        return True
+    if _contains_http_5xx(low):
+        return True
+    for cur in _iter_exception_chain(exc):
+        class_name = type(cur).__name__.strip().lower()
+        if any(token in class_name for token in _TRANSIENT_CLASS_NAME_HINTS):
+            return True
+    return False
+
+
+def _contains_http_5xx(text: str) -> bool:
+    for code_text in re.findall(r"\b5\d{2}\b", str(text or "")):
+        try:
+            code = int(code_text)
+        except ValueError:
+            continue
+        if 500 <= code <= 599:
+            return True
+    return False
+
+
+def _iter_exception_chain(exc: Exception) -> list[Exception]:
+    out: list[Exception] = []
+    seen: set[int] = set()
+    cur: Exception | None = exc
+    while cur is not None and id(cur) not in seen:
+        out.append(cur)
+        seen.add(id(cur))
+        next_exc = None
+        if isinstance(getattr(cur, "__cause__", None), Exception):
+            next_exc = getattr(cur, "__cause__")
+        elif isinstance(getattr(cur, "__context__", None), Exception):
+            next_exc = getattr(cur, "__context__")
+        cur = next_exc
+    return out
+
+
+def _is_task_not_found_error(message: str) -> bool:
+    low = str(message or "").strip().lower()
+    return any(token in low for token in _TASK_NOT_FOUND_SIGNALS)
 
 
 def _render_summary_markdown(
