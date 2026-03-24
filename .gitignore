@@ -40,3 +40,4 @@ config/auto_analysis.json
 
 # Local private profile overrides
 config/*.local.json
+config/*.local.json.lock
