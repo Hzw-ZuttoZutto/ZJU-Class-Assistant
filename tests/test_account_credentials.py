@@ -9,6 +9,7 @@ from src.common.account import (
     parse_account_file,
     resolve_credentials,
     resolve_dingtalk_bot_settings,
+    resolve_effective_llm_base_url,
     resolve_openai_api_key,
     resolve_openai_client_settings,
     resolve_tingwu_settings,
@@ -111,6 +112,72 @@ class AccountCredentialTests(unittest.TestCase):
         self.assertEqual(key, "ahm_key")
         self.assertEqual(base_url, "https://example.gateway/v1")
         self.assertEqual(err, "")
+
+    def test_resolve_glm_client_settings_defaults_to_bigmodel_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text(
+                "ZAI_API_KEY=glm_key\nOPENAI_BASE_URL=https://aihubmix.com/v1\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                key, base_url, err = resolve_openai_client_settings(model_name="glm-4.5-airx")
+        self.assertEqual(key, "glm_key")
+        self.assertEqual(base_url, "https://open.bigmodel.cn/api/paas/v4/")
+        self.assertEqual(err, "")
+
+    def test_resolve_glm_client_settings_fallback_to_glm_api_key_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {"GLM_API_KEY": "glm_alias_key"}, clear=True),
+            ):
+                key, base_url, err = resolve_openai_client_settings(model_name="glm-4.5-airx")
+        self.assertEqual(key, "glm_alias_key")
+        self.assertEqual(base_url, "https://open.bigmodel.cn/api/paas/v4/")
+        self.assertEqual(err, "")
+
+    def test_resolve_glm_client_settings_missing_key(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                key, base_url, err = resolve_openai_client_settings(model_name="glm-4.5-airx")
+        self.assertEqual(key, "")
+        self.assertEqual(base_url, "")
+        self.assertIn("missing GLM API key", err)
+        self.assertIn("ZAI_API_KEY", err)
+        self.assertIn("GLM_API_KEY", err)
+
+    def test_resolve_effective_llm_base_url_prefers_explicit_for_non_glm(self) -> None:
+        base_url = resolve_effective_llm_base_url(
+            model_name="gpt-4.1-mini",
+            explicit_base_url="https://aihubmix.com/v1",
+            resolved_base_url="https://api.openai.com/v1",
+        )
+        self.assertEqual(base_url, "https://aihubmix.com/v1")
+
+    def test_resolve_effective_llm_base_url_glm_ignores_aihubmix_explicit(self) -> None:
+        base_url = resolve_effective_llm_base_url(
+            model_name="glm-4.5-airx",
+            explicit_base_url="https://aihubmix.com/v1",
+            resolved_base_url="https://open.bigmodel.cn/api/paas/v4/",
+        )
+        self.assertEqual(base_url, "https://open.bigmodel.cn/api/paas/v4/")
+
+    def test_resolve_effective_llm_base_url_glm_keeps_non_aihubmix_explicit(self) -> None:
+        base_url = resolve_effective_llm_base_url(
+            model_name="glm-4.5-airx",
+            explicit_base_url="https://example.proxy/v1",
+            resolved_base_url="https://open.bigmodel.cn/api/paas/v4/",
+        )
+        self.assertEqual(base_url, "https://example.proxy/v1")
 
     def test_resolve_dingtalk_bot_settings_from_account_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:

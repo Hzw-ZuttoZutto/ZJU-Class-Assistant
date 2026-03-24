@@ -310,6 +310,51 @@ class OpenAIInsightClientTests(unittest.TestCase):
             self.assertEqual(calls[0].get("text", {}).get("verbosity"), "low")
             self.assertEqual(calls[1].get("text", {}).get("verbosity"), "medium")
 
+    def test_analyze_glm_uses_chat_completions_with_json_mode(self) -> None:
+        class _GLMChatCompletions:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"important": false, "summary": "当前没有什么重要内容", '
+                                    '"context_summary": "无重要内容", "matched_terms": [], "reason": "none"}'
+                                )
+                            }
+                        }
+                    ]
+                }
+
+        class _GLMOpenAI:
+            def __init__(self, *, api_key: str, timeout: float, max_retries: int = 0) -> None:
+                _ = (api_key, timeout, max_retries)
+                self.audio = _FakeAudio()
+                self.responses = _FakeResponses("{}")
+                self.chat = type("Chat", (), {"completions": _GLMChatCompletions()})()
+
+        with mock.patch("src.live.insight.openai_client._load_openai_cls", return_value=_GLMOpenAI):
+            client = OpenAIInsightClient(api_key="k", timeout_sec=12.0)
+            result = client.analyze_text(
+                analysis_model="glm-4.5-airx",
+                keywords=KeywordConfig(),
+                current_text="当前老师说请立即签到",
+                context_text="无历史文本块",
+                chunk_seconds=10.0,
+                timeout_sec=2.0,
+            )
+            self.assertFalse(result.important)
+            calls = client.client.chat.completions.calls
+            self.assertEqual(len(calls), 1)
+            request = calls[0]
+            self.assertNotIn("input", request)
+            self.assertEqual(request.get("response_format", {}).get("type"), "json_object")
+            self.assertEqual(request.get("extra_body", {}).get("thinking", {}).get("type"), "disabled")
+
 
 if __name__ == "__main__":
     unittest.main()

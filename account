@@ -12,6 +12,12 @@ OPENAI_API_KEY=your_openai_api_key
 # 或 AIHubMix 网关 Key
 # AIHUBMIX_API_KEY=your_aihubmix_api_key
 
+# [可选] GLM 系列模型 Key（当 --rt-model 以 glm- 开头时自动使用）
+# 建议填写该键（主键名）
+# ZAI_API_KEY=your_zai_api_key
+# 兼容别名（两者填一个即可）
+# GLM_API_KEY=your_glm_api_key
+
 # [可选] OpenAI 兼容网关地址
 # - 如果只填 AIHUBMIX_API_KEY 且不填该项，默认会使用 https://aihubmix.com/v1
 OPENAI_BASE_URL=https://aihubmix.com/v1

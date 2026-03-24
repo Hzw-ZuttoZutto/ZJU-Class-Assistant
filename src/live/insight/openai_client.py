@@ -191,7 +191,10 @@ class OpenAIInsightClient:
 
         if response is not None and _should_retry_analysis_response(response=response, error=parse_error):
             retry_payload = dict(request_payload)
-            retry_payload["max_output_tokens"] = max(1600, int(request_payload.get("max_output_tokens", 1200)) * 2)
+            if "max_output_tokens" in request_payload:
+                retry_payload["max_output_tokens"] = max(1600, int(request_payload.get("max_output_tokens", 1200)) * 2)
+            elif "max_tokens" in request_payload:
+                retry_payload["max_tokens"] = max(1600, int(request_payload.get("max_tokens", 1200)) * 2)
             return self._run_analysis_attempt(
                 request_payload=retry_payload,
                 system_prompt=system_prompt,
@@ -205,13 +208,20 @@ class OpenAIInsightClient:
 
     def _create_analysis_response(self, payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         request = dict(payload)
-        request["temperature"] = 0
+        normalized_model = _normalize_model_name(str(request.get("model", "")))
+        if not _is_glm_family(normalized_model):
+            request["temperature"] = 0
         removed: set[str] = set()
         value_adjusted: set[str] = set()
         for _ in range(8):
             try:
-                return self.client.responses.create(**request), dict(request)
+                return self._invoke_analysis_endpoint(request=request, model_name=normalized_model), dict(request)
             except Exception as exc:
+                if _is_temperature_unsupported_error(exc) and "temperature" in request and "temperature" not in removed:
+                    removed.add("temperature")
+                    request = dict(request)
+                    request.pop("temperature", None)
+                    continue
                 unsupported = _extract_unsupported_parameter(exc)
                 if unsupported:
                     key = unsupported.split(".", 1)[0]
@@ -230,7 +240,12 @@ class OpenAIInsightClient:
                     raise
                 value_adjusted.add(adjusted_key)
                 request = adjusted_request
-        return self.client.responses.create(**request), dict(request)
+        return self._invoke_analysis_endpoint(request=request, model_name=normalized_model), dict(request)
+
+    def _invoke_analysis_endpoint(self, *, request: dict[str, Any], model_name: str) -> Any:
+        if _is_glm_family(model_name):
+            return self.client.chat.completions.create(**request)
+        return self.client.responses.create(**request)
 
 
 def invoke_analyze_text(
@@ -285,9 +300,21 @@ def _extract_transcript_text(response: Any) -> str:
 
 
 def _extract_output_text(response: Any) -> str:
+    if isinstance(response, dict):
+        text = _extract_text_from_chat_completion(response)
+        if text:
+            return text
+        text = _extract_text_from_output(response.get("output"))
+        if text:
+            return text
+
     direct = getattr(response, "output_text", None)
     if isinstance(direct, str) and direct.strip():
         return direct.strip()
+
+    text = _extract_text_from_chat_completion(response)
+    if text:
+        return text
 
     output = getattr(response, "output", None)
     text = _extract_text_from_output(output)
@@ -296,10 +323,13 @@ def _extract_output_text(response: Any) -> str:
 
     if hasattr(response, "model_dump"):
         dumped = response.model_dump()
+        text = _extract_text_from_chat_completion(dumped)
+        if text:
+            return text
         text = _extract_text_from_output(dumped.get("output"))
         if text:
             return text
-    raise ValueError("model response has no output_text")
+    raise ValueError("model response has no output_text/content")
 
 
 def _extract_analysis_payload(response: Any) -> dict:
@@ -341,6 +371,89 @@ def _extract_text_from_output(output: Any) -> str:
                     text = str(getattr(block, "text", "")).strip()
                     if text:
                         parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _extract_text_from_chat_completion(response: Any) -> str:
+    if isinstance(response, dict):
+        return _extract_text_from_chat_completion_dict(response)
+
+    choices = getattr(response, "choices", None)
+    text = _extract_text_from_chat_choices(choices)
+    if text:
+        return text
+
+    if hasattr(response, "model_dump"):
+        try:
+            dumped = response.model_dump()
+        except Exception:
+            return ""
+        if isinstance(dumped, dict):
+            return _extract_text_from_chat_completion_dict(dumped)
+    return ""
+
+
+def _extract_text_from_chat_completion_dict(payload: dict[str, Any]) -> str:
+    return _extract_text_from_chat_choices(payload.get("choices"))
+
+
+def _extract_text_from_chat_choices(choices: Any) -> str:
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    message: Any = None
+    if isinstance(first, dict):
+        message = first.get("message")
+    else:
+        message = getattr(first, "message", None)
+        if message is None and hasattr(first, "model_dump"):
+            try:
+                dumped = first.model_dump()
+            except Exception:
+                dumped = {}
+            if isinstance(dumped, dict):
+                message = dumped.get("message")
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        return _extract_text_from_chat_content(message.get("content"))
+    content = getattr(message, "content", None)
+    if content is None and hasattr(message, "model_dump"):
+        try:
+            dumped = message.model_dump()
+        except Exception:
+            dumped = {}
+        if isinstance(dumped, dict):
+            content = dumped.get("content")
+    return _extract_text_from_chat_content(content)
+
+
+def _extract_text_from_chat_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict):
+            text = str(item.get("text", "")).strip()
+            if text:
+                parts.append(text)
+                continue
+            if str(item.get("type", "")).strip().lower() in {"text", "output_text"}:
+                text = str(item.get("content", "")).strip()
+                if text:
+                    parts.append(text)
+        else:
+            text = str(getattr(item, "text", "")).strip()
+            if text:
+                parts.append(text)
+                continue
+            item_type = str(getattr(item, "type", "")).strip().lower()
+            if item_type in {"text", "output_text"}:
+                text = str(getattr(item, "content", "")).strip()
+                if text:
+                    parts.append(text)
     return "\n".join(parts).strip()
 
 
@@ -453,6 +566,20 @@ def _build_analysis_request_payload(
     timeout_sec: float,
 ) -> dict[str, Any]:
     normalized_model = _normalize_model_name(analysis_model)
+    if _is_glm_family(normalized_model):
+        return {
+            "model": analysis_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": 1200,
+            "timeout": max(1.0, float(timeout_sec)),
+            "temperature": 0.1,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+
     request_payload: dict[str, Any] = {
         "model": analysis_model,
         "input": [
@@ -490,6 +617,10 @@ def _is_gpt5_family(model: str) -> bool:
 
 def _is_gpt41_family(model: str) -> bool:
     return model.startswith("gpt-4.1")
+
+
+def _is_glm_family(model: str) -> bool:
+    return model.startswith("glm-")
 
 
 def _apply_unsupported_value_fallback(*, request: dict[str, Any], exc: Exception) -> tuple[dict[str, Any] | None, str]:

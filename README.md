@@ -74,6 +74,8 @@ cp account .account
 | `PASSWORD` | 是（`scan/analysis`） | `scan`、`analysis` | 浙大统一认证密码 |
 | `OPENAI_API_KEY` | 与 `AIHUBMIX_API_KEY` 二选一 | `analysis` / `mic-listen` 实时分析 | OpenAI 兼容文本/语音能力 Key |
 | `AIHUBMIX_API_KEY` | 与 `OPENAI_API_KEY` 二选一 | `analysis` / `mic-listen` 实时分析 | AIHubMix 网关 Key |
+| `ZAI_API_KEY` | `--rt-model` 以 `glm-` 开头时必填（可与 `GLM_API_KEY` 二选一） | `analysis` / `mic-listen` 实时分析 | GLM 系列模型 API Key（主键名） |
+| `GLM_API_KEY` | `--rt-model` 以 `glm-` 开头时可用 | `analysis` / `mic-listen` 实时分析 | GLM 系列模型 API Key（兼容别名） |
 | `OPENAI_BASE_URL` | 否 | `analysis` / `mic-listen` 实时分析 | OpenAI 兼容网关地址 |
 | `DASHSCOPE_API_KEY` | stream 模式必填 | `analysis` / `mic-listen(stream)` | DashScope 实时 ASR Key |
 | `DINGTALK_WEBHOOK` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人 Webhook |
@@ -89,11 +91,14 @@ cp account .account
 
 - 登录凭据：CLI `--username/--password` > `.account`。
 - OpenAI/AIHubMix Key：`.account` > 环境变量。
+- GLM Key：`.account` > 环境变量（优先 `ZAI_API_KEY`，兼容 `GLM_API_KEY`）。
 - Base URL：`.account` > 环境变量。
 - DashScope Key：`.account` > 环境变量。
 - DingTalk 机器人：`.account` > 环境变量。
 - Tingwu/OSS 凭据：`.account` > 环境变量（仅支持标准键名，不兼容 `ACCESS_KEY_ID/ACCESS_KEY_SECRET`）。
 - 仅配置 `AIHUBMIX_API_KEY` 且未设置 Base URL 时，默认使用 `https://aihubmix.com/v1`。
+- 当 `--rt-model` 以 `glm-` 开头且未显式设置 `--rt-api-base-url` 时，默认使用 `https://open.bigmodel.cn/api/paas/v4/`。
+- 当 `--rt-model` 以 `glm-` 开头且 `--rt-api-base-url` 仍为 AIHubMix 地址时，会自动忽略该地址并改走 GLM 链路（无需手工删配置）。
 
 ## 4. 实践默认参数配置（可直接复制）
 
@@ -326,7 +331,7 @@ python -m src.main mic-publish
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
-| `--rt-model` | `gpt-4.1-mini` | 文本分析模型 |
+| `--rt-model` | `gpt-4.1-mini` | 文本分析模型（`glm-*` 会自动切换到 GLM 调用链路） |
 | `--rt-asr-scene` | `zh` | 实时 ASR 场景（`zh` / `multi`） |
 | `--rt-asr-model` | 无 | 实时 ASR 模型（必填） |
 | `--rt-hotwords-file` | `config/realtime_hotwords.json` | 热词 JSON 数组文件 |

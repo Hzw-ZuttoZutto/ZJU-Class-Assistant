@@ -24,7 +24,12 @@ from typing import Any, Callable
 
 import requests
 
-from src.common.account import resolve_dashscope_api_key, resolve_dingtalk_bot_settings, resolve_openai_client_settings
+from src.common.account import (
+    resolve_dashscope_api_key,
+    resolve_dingtalk_bot_settings,
+    resolve_effective_llm_base_url,
+    resolve_openai_client_settings,
+)
 from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.audio_streamer import build_mic_stream_ffmpeg_command
 from src.live.insight.dingtalk import DingTalkNotifier
@@ -58,12 +63,17 @@ def _build_openai_client(config: RealtimeInsightConfig) -> OpenAIInsightClient |
     api_key, resolved_base_url, key_error = resolve_openai_client_settings(
         api_key_env_name=config.api_key_env,
         base_url_env_name=config.base_url_env,
+        model_name=config.model,
     )
     if not api_key:
         print(f"[mic-listen] {key_error}")
         return None
 
-    base_url = (config.api_base_url or "").strip() or resolved_base_url
+    base_url = resolve_effective_llm_base_url(
+        model_name=config.model,
+        explicit_base_url=config.api_base_url,
+        resolved_base_url=resolved_base_url,
+    )
     try:
         if base_url:
             print(f"[mic-listen] using OpenAI-compatible base URL: {base_url}")

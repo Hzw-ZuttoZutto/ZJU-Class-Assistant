@@ -8,7 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from src.common.account import resolve_dashscope_api_key, resolve_openai_client_settings
+from src.common.account import (
+    resolve_dashscope_api_key,
+    resolve_effective_llm_base_url,
+    resolve_openai_client_settings,
+)
 from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.audio_streamer import RealtimeAudioFrameReader
 from src.live.insight.audio_chunker import RealtimeAudioChunker
@@ -225,13 +229,18 @@ class RealtimeInsightService:
             api_key, resolved_base_url, key_error = resolve_openai_client_settings(
                 api_key_env_name=self.config.api_key_env,
                 base_url_env_name=self.config.base_url_env,
+                model_name=self.config.model,
             )
             if not api_key:
                 self._log(
                     f"[rt-insight] {key_error}; realtime insight disabled"
                 )
                 return False
-            base_url = (self.config.api_base_url or "").strip() or resolved_base_url
+            base_url = resolve_effective_llm_base_url(
+                model_name=self.config.model,
+                explicit_base_url=self.config.api_base_url,
+                resolved_base_url=resolved_base_url,
+            )
             self.config.api_base_url = base_url
             try:
                 self._client = OpenAIInsightClient(
@@ -277,11 +286,16 @@ class RealtimeInsightService:
             api_key, resolved_base_url, key_error = resolve_openai_client_settings(
                 api_key_env_name=self.config.api_key_env,
                 base_url_env_name=self.config.base_url_env,
+                model_name=self.config.model,
             )
             if not api_key:
                 self._log(f"[rt-stream] {key_error}; stream insight disabled")
                 return False
-            base_url = (self.config.api_base_url or "").strip() or resolved_base_url
+            base_url = resolve_effective_llm_base_url(
+                model_name=self.config.model,
+                explicit_base_url=self.config.api_base_url,
+                resolved_base_url=resolved_base_url,
+            )
             self.config.api_base_url = base_url
             try:
                 self._client = OpenAIInsightClient(

@@ -4,6 +4,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+_DEFAULT_OPENAI_API_ENV = "OPENAI_API_KEY"
+_DEFAULT_OPENAI_BASE_ENV = "OPENAI_BASE_URL"
+_DEFAULT_GLM_API_ENV = "ZAI_API_KEY"
+_DEFAULT_GLM_BASE_ENV = "GLM_BASE_URL"
+_GLM_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
+
 
 def workspace_root() -> Path:
     # src/common/account.py -> repo root is parents[2]
@@ -53,11 +59,13 @@ def resolve_openai_base_url(*, env_name: str = "OPENAI_BASE_URL") -> str:
 
 def resolve_openai_client_settings(
     *,
-    api_key_env_name: str = "OPENAI_API_KEY",
-    base_url_env_name: str = "OPENAI_BASE_URL",
+    api_key_env_name: str = _DEFAULT_OPENAI_API_ENV,
+    base_url_env_name: str = _DEFAULT_OPENAI_BASE_ENV,
+    model_name: str = "",
 ) -> tuple[str, str, str]:
-    resolved_api_env = (api_key_env_name or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
-    resolved_base_env = (base_url_env_name or "OPENAI_BASE_URL").strip() or "OPENAI_BASE_URL"
+    resolved_api_env = (api_key_env_name or _DEFAULT_OPENAI_API_ENV).strip() or _DEFAULT_OPENAI_API_ENV
+    resolved_base_env = (base_url_env_name or _DEFAULT_OPENAI_BASE_ENV).strip() or _DEFAULT_OPENAI_BASE_ENV
+    provider = _resolve_llm_provider_from_model(model_name)
 
     account_file = default_account_file()
     account_entries: dict[str, str] = {}
@@ -67,6 +75,31 @@ def resolve_openai_client_settings(
             account_entries = _parse_account_entries(account_file)
         except OSError as exc:
             account_read_error = f"failed to read account file {account_file}: {exc}"
+
+    if provider == "glm":
+        glm_api_env = _resolve_glm_api_env_name(resolved_api_env)
+        glm_base_env = _resolve_glm_base_env_name(resolved_base_env)
+        key = _resolve_named_setting(
+            account_entries=account_entries,
+            account_candidates=[glm_api_env.lower(), "zai_api_key", "glm_api_key"],
+            env_candidates=[glm_api_env, _DEFAULT_GLM_API_ENV, "GLM_API_KEY"],
+        )
+        base_url = _resolve_named_setting(
+            account_entries=account_entries,
+            account_candidates=[glm_base_env.lower(), "glm_base_url", "zai_base_url"],
+            env_candidates=[glm_base_env, _DEFAULT_GLM_BASE_ENV, "ZAI_BASE_URL"],
+        )
+        if not key:
+            if account_read_error:
+                return "", "", account_read_error
+            return "", "", (
+                "missing GLM API key: set "
+                f"{glm_api_env} / {_DEFAULT_GLM_API_ENV} / GLM_API_KEY in {account_file} "
+                f"or export {glm_api_env} / {_DEFAULT_GLM_API_ENV} / GLM_API_KEY"
+            )
+        if not base_url:
+            base_url = _GLM_DEFAULT_BASE_URL
+        return key, base_url, ""
 
     key, key_source = _resolve_openai_key(
         account_entries=account_entries,
@@ -88,6 +121,50 @@ def resolve_openai_client_settings(
     if not base_url and key_source == "aihubmix":
         base_url = "https://aihubmix.com/v1"
     return key, base_url, ""
+
+
+def resolve_effective_llm_base_url(
+    *,
+    model_name: str,
+    explicit_base_url: str = "",
+    resolved_base_url: str = "",
+) -> str:
+    explicit = str(explicit_base_url or "").strip()
+    resolved = str(resolved_base_url or "").strip()
+    provider = _resolve_llm_provider_from_model(model_name)
+    if explicit:
+        # When model is GLM, keeping stale AIHubMix base URL would route requests
+        # to the wrong provider. Auto-ignore it and fall back to resolved GLM URL.
+        if provider == "glm" and _is_aihubmix_base_url(explicit):
+            return resolved
+        return explicit
+    return resolved
+
+
+def _resolve_llm_provider_from_model(model_name: str) -> str:
+    normalized = str(model_name or "").strip().lower()
+    if normalized.startswith("glm-"):
+        return "glm"
+    return "openai"
+
+
+def _is_aihubmix_base_url(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().lower()
+    return "aihubmix.com" in normalized
+
+
+def _resolve_glm_api_env_name(api_key_env_name: str) -> str:
+    candidate = str(api_key_env_name or "").strip()
+    if not candidate or candidate.upper() == _DEFAULT_OPENAI_API_ENV:
+        return _DEFAULT_GLM_API_ENV
+    return candidate
+
+
+def _resolve_glm_base_env_name(base_url_env_name: str) -> str:
+    candidate = str(base_url_env_name or "").strip()
+    if not candidate or candidate.upper() == _DEFAULT_OPENAI_BASE_ENV:
+        return _DEFAULT_GLM_BASE_ENV
+    return candidate
 
 
 def resolve_dingtalk_bot_settings(
