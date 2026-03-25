@@ -13,6 +13,14 @@ from pathlib import Path
 from shutil import which
 from typing import Callable
 
+from src.live.audio_sources import is_rtc_stream_url, list_teacher_audio_sources
+from src.live.rtc_audio import PCMFrameConverter, WebRTCAudioPullSession
+
+_RTC_STARTUP_PROBE_TIMEOUT_SEC = 8.0
+_HLS_STARTUP_PROBE_TIMEOUT_SEC = 3.0
+_RTC_RUNTIME_PROBE_TIMEOUT_SEC = 8.0
+_HLS_RUNTIME_PROBE_TIMEOUT_SEC = 3.0
+
 
 def _format_ts(dt: datetime) -> str:
     return dt.astimezone().strftime("%Y%m%d_%H%M%S")
@@ -70,6 +78,16 @@ class AudioRecorderBackend:
     def probe_audio(self, stream_url: str, *, timeout_sec: float = 4.0) -> bool:
         if not stream_url:
             return False
+        if is_rtc_stream_url(stream_url):
+            try:
+                timeout = max(3.0, float(timeout_sec))
+                session = WebRTCAudioPullSession(source_url=stream_url, request_timeout_sec=timeout)
+                session.start(on_audio_frame=lambda _frame: None)
+                ok, _error = session.wait_until_ready(timeout_sec=max(1.0, timeout))
+                session.stop(timeout_sec=max(1.0, timeout))
+                return ok
+            except Exception:
+                return False
         cmd = [
             self.ffprobe,
             "-v",
@@ -103,8 +121,16 @@ class AudioRecorderBackend:
                 return True
         return False
 
-    def start_capture(self, stream_url: str, output_path: Path) -> subprocess.Popen:
+    def start_capture(self, stream_url: str, output_path: Path) -> subprocess.Popen | _RtcCaptureProcess:
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        if is_rtc_stream_url(stream_url):
+            capture = _RtcCaptureProcess(
+                ffmpeg_bin=self.ffmpeg,
+                stream_url=stream_url,
+                output_path=output_path,
+            )
+            capture.start()
+            return capture
         cmd = [
             self.ffmpeg,
             "-hide_banner",
@@ -134,6 +160,9 @@ class AudioRecorderBackend:
         )
 
     def stop_capture(self, proc: subprocess.Popen, *, grace_sec: float = 3.0) -> None:
+        if isinstance(proc, _RtcCaptureProcess):
+            proc.stop(grace_sec=grace_sec)
+            return
         if proc.poll() is not None:
             return
         try:
@@ -181,6 +210,146 @@ class AudioRecorderBackend:
                 pass
 
 
+class _RtcCaptureProcess:
+    def __init__(
+        self,
+        *,
+        ffmpeg_bin: str,
+        stream_url: str,
+        output_path: Path,
+    ) -> None:
+        self.ffmpeg_bin = ffmpeg_bin
+        self.stream_url = stream_url
+        self.output_path = output_path
+
+        self._proc: subprocess.Popen | None = None
+        self._session: WebRTCAudioPullSession | None = None
+        self._watcher: threading.Thread | None = None
+        self._converter = PCMFrameConverter(sample_rate=16000, layout="mono")
+        self._write_lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    def start(self) -> None:
+        cmd = [
+            self.ffmpeg_bin,
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-nostdin",
+            "-y",
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-i",
+            "pipe:0",
+            "-vn",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "4",
+            str(self.output_path),
+        ]
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.stdin is None:
+            proc.kill()
+            proc.wait(timeout=1.0)
+            raise RuntimeError("ffmpeg stdin unavailable for rtc audio capture")
+
+        def _on_audio_frame(frame) -> None:
+            for chunk in self._converter.convert(frame):
+                if not chunk or self._stop_event.is_set():
+                    continue
+                with self._write_lock:
+                    stdin = proc.stdin
+                    if stdin is None:
+                        return
+                    try:
+                        stdin.write(chunk)
+                    except (BrokenPipeError, OSError):
+                        return
+
+        session = WebRTCAudioPullSession(source_url=self.stream_url)
+        session.start(on_audio_frame=_on_audio_frame)
+        ok, error = session.wait_until_ready(timeout_sec=10.0)
+        if not ok:
+            session.stop()
+            self._close_stdin(proc)
+            proc.kill()
+            proc.wait(timeout=1.0)
+            raise RuntimeError(error or "rtc audio startup timeout")
+
+        self._proc = proc
+        self._session = session
+        watcher = threading.Thread(target=self._watch_session, name="rtc-audio-capture-watch", daemon=True)
+        self._watcher = watcher
+        watcher.start()
+
+    def poll(self):
+        proc = self._proc
+        if proc is None:
+            return 0
+        return proc.poll()
+
+    def send_signal(self, _sig) -> None:
+        self.stop()
+
+    def wait(self, timeout: float = 1.0) -> int:
+        proc = self._proc
+        if proc is None:
+            return 0
+        return proc.wait(timeout=timeout)
+
+    def kill(self) -> None:
+        self.stop(grace_sec=0.5)
+
+    def stop(self, *, grace_sec: float = 3.0) -> None:
+        self._stop_event.set()
+        session = self._session
+        if session is not None:
+            session.stop(timeout_sec=grace_sec)
+        proc = self._proc
+        if proc is None:
+            return
+        self._close_stdin(proc)
+        if proc.poll() is None:
+            try:
+                proc.send_signal(signal.SIGINT)
+                proc.wait(timeout=max(0.5, float(grace_sec)))
+            except Exception:
+                proc.kill()
+                proc.wait(timeout=1.0)
+        watcher = self._watcher
+        if watcher is not None and watcher.is_alive():
+            watcher.join(timeout=max(0.5, float(grace_sec)))
+
+    def _watch_session(self) -> None:
+        session = self._session
+        proc = self._proc
+        if session is None or proc is None:
+            return
+        session.wait(timeout_sec=None)
+        self._close_stdin(proc)
+
+    def _close_stdin(self, proc: subprocess.Popen) -> None:
+        with self._write_lock:
+            stdin = proc.stdin
+            proc.stdin = None
+            if stdin is None:
+                return
+            try:
+                stdin.close()
+            except OSError:
+                pass
+
+
 class AudioOnlyRecorderService:
     def __init__(
         self,
@@ -203,7 +372,7 @@ class AudioOnlyRecorderService:
         self._tmp_dir = self.session_meta.session_dir / "_tingwu_audio_tmp"
         self._segments: list[AudioSegment] = []
         self._segment_index = 0
-        self._active_proc: subprocess.Popen | None = None
+        self._active_proc: subprocess.Popen | _RtcCaptureProcess | None = None
         self._active_path: Path | None = None
         self._active_started_at: datetime | None = None
         self._active_url = ""
@@ -217,12 +386,14 @@ class AudioOnlyRecorderService:
             return False, "ffmpeg/ffprobe is required but not found in PATH"
         deadline = time.monotonic() + max(1.0, float(timeout_sec))
         while time.monotonic() < deadline:
-            url = self._teacher_stream_url()
-            if not url:
+            candidates = self._teacher_audio_sources()
+            if not candidates:
                 time.sleep(0.8)
                 continue
-            if self.backend.probe_audio(url, timeout_sec=3.0):
-                return True, ""
+            for url in candidates:
+                probe_timeout = self._probe_timeout(url, startup=True)
+                if self.backend.probe_audio(url, timeout_sec=probe_timeout):
+                    return True, ""
             time.sleep(0.8)
         return False, "teacher stream with audio not detected before startup timeout"
 
@@ -246,9 +417,24 @@ class AudioOnlyRecorderService:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             now = datetime.now().astimezone()
-            url = self._teacher_stream_url()
-            if url and self.backend.probe_audio(url, timeout_sec=2.0):
-                self._ensure_capture(url=url, now=now)
+            candidates = self._teacher_audio_sources()
+
+            if self._active_proc is not None and self._active_url and self._active_url in candidates:
+                if self._is_capture_stalled():
+                    self._stop_capture(now=now, reason="capture_stalled")
+                else:
+                    self._stop_event.wait(max(0.2, float(self.config.poll_interval_sec)))
+                    continue
+
+            target_url = ""
+            for url in candidates:
+                probe_timeout = self._probe_timeout(url, startup=False)
+                if self.backend.probe_audio(url, timeout_sec=probe_timeout):
+                    target_url = url
+                    break
+
+            if target_url:
+                self._ensure_capture(url=target_url, now=now)
             else:
                 self._stop_capture(now=now, reason="stream_missing_audio")
             self._stop_event.wait(max(0.2, float(self.config.poll_interval_sec)))
@@ -263,9 +449,6 @@ class AudioOnlyRecorderService:
             self._stop_capture(now=now, reason="stream_url_changed")
             self._start_capture(url=url, now=now)
             return
-        if self._is_capture_stalled():
-            self._stop_capture(now=now, reason="capture_stalled")
-            self._start_capture(url=url, now=now)
 
     def _start_capture(self, *, url: str, now: datetime) -> None:
         self._segment_index += 1
@@ -339,15 +522,19 @@ class AudioOnlyRecorderService:
                 return False
         return (now_mono - self._active_last_growth_mono) > max(1.0, float(self.config.max_lag_sec))
 
-    def _teacher_stream_url(self) -> str:
+    def _teacher_audio_sources(self) -> list[str]:
         try:
             snapshot = self.poller.get_snapshot()
         except Exception:
-            return ""
-        stream = getattr(snapshot, "streams", {}).get("teacher")
-        if not stream:
-            return ""
-        return str(getattr(stream, "stream_m3u8", "") or "").strip()
+            return []
+        return list_teacher_audio_sources(snapshot)
+
+    @staticmethod
+    def _probe_timeout(stream_url: str, *, startup: bool) -> float:
+        is_rtc = is_rtc_stream_url(stream_url)
+        if startup:
+            return _RTC_STARTUP_PROBE_TIMEOUT_SEC if is_rtc else _HLS_STARTUP_PROBE_TIMEOUT_SEC
+        return _RTC_RUNTIME_PROBE_TIMEOUT_SEC if is_rtc else _HLS_RUNTIME_PROBE_TIMEOUT_SEC
 
     def _build_result(self, *, error: str) -> AudioRecordingResult:
         final_mp3 = self.session_meta.session_dir / "tingwu_audio_full.mp3"

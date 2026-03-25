@@ -14,6 +14,7 @@ from src.common.account import (
     resolve_openai_client_settings,
 )
 from src.common.rotating_log import RotatingLineWriter
+from src.live.audio_sources import first_teacher_hls_source, list_teacher_audio_sources
 from src.live.insight.audio_streamer import RealtimeAudioFrameReader
 from src.live.insight.audio_chunker import RealtimeAudioChunker
 from src.live.insight.dingtalk import DingTalkNotifier
@@ -358,7 +359,7 @@ class RealtimeInsightService:
         _ = pipeline.submit_audio_frame(data)
 
     def _sync_stream_source(self) -> None:
-        teacher_url = self._teacher_stream_url()
+        teacher_url = self._teacher_hls_stream_url()
         if not teacher_url:
             if self._active_url:
                 self._log("[rt-insight] teacher stream unavailable; pausing audio chunker")
@@ -379,34 +380,44 @@ class RealtimeInsightService:
             self._log(f"[rt-insight] failed to start audio chunker: {exc}")
 
     def _sync_stream_reader_source(self) -> None:
-        teacher_url = self._teacher_stream_url()
-        if not teacher_url:
+        candidates = self._teacher_audio_sources()
+        if not candidates:
             if self._active_url:
                 self._log("[rt-stream] teacher stream unavailable; pausing frame reader")
             self._active_url = ""
             self._stream_reader.stop()
             return
 
-        url_changed = teacher_url != self._active_url
-        if not url_changed and self._stream_reader.is_running():
+        if self._active_url and self._active_url in candidates and self._stream_reader.is_running():
             return
 
-        self._active_url = teacher_url
-        try:
-            self._stream_reader.start_stream_source(teacher_url, on_frame=self._on_stream_audio_frame)
-            if url_changed:
-                self._log("[rt-stream] audio reader switched to new teacher stream")
-            else:
-                self._log("[rt-stream] audio reader recovered on unchanged teacher stream")
-        except Exception as exc:
-            self._log(f"[rt-stream] failed to start audio reader: {exc}")
+        last_error = ""
+        for index, candidate in enumerate(candidates):
+            url_changed = candidate != self._active_url
+            try:
+                self._stream_reader.start_stream_source(candidate, on_frame=self._on_stream_audio_frame)
+                self._active_url = candidate
+                if url_changed:
+                    self._log("[rt-stream] audio reader switched to new teacher stream")
+                else:
+                    self._log("[rt-stream] audio reader recovered on unchanged teacher stream")
+                return
+            except Exception as exc:
+                last_error = str(exc)
+                if index + 1 < len(candidates):
+                    self._log(f"[rt-stream] audio reader source failed, trying fallback: {exc}")
+                continue
 
-    def _teacher_stream_url(self) -> str:
-        snap = self.poller.get_snapshot()
-        stream = snap.streams.get("teacher")
-        if not stream:
-            return ""
-        return str(stream.stream_m3u8 or "").strip()
+        self._active_url = ""
+        self._stream_reader.stop()
+        if last_error:
+            self._log(f"[rt-stream] failed to start audio reader: {last_error}")
+
+    def _teacher_hls_stream_url(self) -> str:
+        return first_teacher_hls_source(self.poller.get_snapshot())
+
+    def _teacher_audio_sources(self) -> list[str]:
+        return list_teacher_audio_sources(self.poller.get_snapshot())
 
     def _dispatch_ready_chunks(self, *, force: bool = False) -> None:
         if self._executor is None:

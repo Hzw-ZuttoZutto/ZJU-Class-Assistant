@@ -12,21 +12,49 @@ from src.live.insight.service import RealtimeInsightService
 
 
 class _FakeStream:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, *, stream_play: str = "") -> None:
         self.stream_m3u8 = url
+        self.stream_play = stream_play
 
 
 class _FakeSnapshot:
-    def __init__(self, url: str) -> None:
-        self.streams = {"teacher": _FakeStream(url)} if url else {}
+    def __init__(
+        self,
+        url: str,
+        *,
+        stream_play: str = "",
+        class_url: str = "",
+        class_stream_play: str = "",
+    ) -> None:
+        streams = {}
+        if url or stream_play:
+            streams["teacher"] = _FakeStream(url, stream_play=stream_play)
+        if class_url or class_stream_play:
+            streams["class"] = _FakeStream(class_url, stream_play=class_stream_play)
+        self.streams = streams
 
 
 class _FakePoller:
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        stream_play: str = "",
+        class_url: str = "",
+        class_stream_play: str = "",
+    ) -> None:
         self.url = url
+        self.stream_play = stream_play
+        self.class_url = class_url
+        self.class_stream_play = class_stream_play
 
     def get_snapshot(self):
-        return _FakeSnapshot(self.url)
+        return _FakeSnapshot(
+            self.url,
+            stream_play=self.stream_play,
+            class_url=self.class_url,
+            class_stream_play=self.class_stream_play,
+        )
 
 
 class _FakeChunker:
@@ -75,6 +103,19 @@ class _FakeFrameReader:
 
     def is_running(self) -> bool:
         return bool(self.running)
+
+
+class _FailingFrameReader(_FakeFrameReader):
+    def __init__(self, *, failed_sources: set[str]) -> None:
+        super().__init__()
+        self.failed_sources = failed_sources
+        self.calls: list[str] = []
+
+    def start_stream_source(self, source_url: str, *, on_frame) -> None:
+        self.calls.append(source_url)
+        if source_url in self.failed_sources:
+            raise RuntimeError(f"source failed: {source_url}")
+        super().start_stream_source(source_url, on_frame=on_frame)
 
 
 class _FakeClient:
@@ -395,6 +436,78 @@ class RealtimeInsightServiceTests(unittest.TestCase):
 
             self.assertEqual(reader.start_calls, 1)
             self.assertEqual(reader.active_source, "https://x/live.m3u8")
+            self.assertTrue(reader.running)
+
+    def test_sync_stream_reader_prefers_rtc_source_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            config = RealtimeInsightConfig(
+                enabled=True,
+                pipeline_mode="stream",
+                asr_model="paraformer-realtime-v2",
+            )
+            service = RealtimeInsightService(
+                poller=_FakePoller(
+                    "https://x/live.m3u8",
+                    stream_play="webrtc://rtc.zju.edu.cn/live/teacher?vhost=video",
+                ),
+                session_dir=session_dir,
+                config=config,
+                chunker=_FakeChunker(),
+                client=_FakeClient(),
+                notifier=_FakeNotifier(),
+                log_fn=lambda _: None,
+            )
+            reader = _FakeFrameReader()
+            service._stream_reader = reader  # type: ignore[assignment]
+
+            service._sync_stream_reader_source()
+
+            self.assertEqual(reader.start_calls, 1)
+            self.assertEqual(reader.active_source, "webrtc://rtc.zju.edu.cn/live/teacher?vhost=video")
+            self.assertTrue(reader.running)
+
+    def test_sync_stream_reader_falls_back_to_class_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            config = RealtimeInsightConfig(
+                enabled=True,
+                pipeline_mode="stream",
+                asr_model="paraformer-realtime-v2",
+            )
+            service = RealtimeInsightService(
+                poller=_FakePoller(
+                    "https://x/teacher.m3u8",
+                    stream_play="webrtc://rtc.zju.edu.cn/live/teacher?vhost=video",
+                    class_url="https://x/class.m3u8",
+                    class_stream_play="webrtc://rtc.zju.edu.cn/live/class?vhost=video",
+                ),
+                session_dir=session_dir,
+                config=config,
+                chunker=_FakeChunker(),
+                client=_FakeClient(),
+                notifier=_FakeNotifier(),
+                log_fn=lambda _: None,
+            )
+            reader = _FailingFrameReader(
+                failed_sources={
+                    "webrtc://rtc.zju.edu.cn/live/teacher?vhost=video",
+                    "https://x/teacher.m3u8",
+                }
+            )
+            service._stream_reader = reader  # type: ignore[assignment]
+
+            service._sync_stream_reader_source()
+
+            self.assertEqual(
+                reader.calls,
+                [
+                    "webrtc://rtc.zju.edu.cn/live/teacher?vhost=video",
+                    "https://x/teacher.m3u8",
+                    "webrtc://rtc.zju.edu.cn/live/class?vhost=video",
+                ],
+            )
+            self.assertEqual(reader.active_source, "webrtc://rtc.zju.edu.cn/live/class?vhost=video")
             self.assertTrue(reader.running)
 
 
