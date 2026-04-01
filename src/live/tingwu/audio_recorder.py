@@ -13,7 +13,7 @@ from pathlib import Path
 from shutil import which
 from typing import Callable
 
-from src.live.audio_sources import is_rtc_stream_url, list_teacher_audio_sources
+from src.live.audio_sources import is_rtc_stream_url, list_tingwu_audio_sources
 from src.live.rtc_audio import PCMFrameConverter, WebRTCAudioPullSession
 
 _RTC_STARTUP_PROBE_TIMEOUT_SEC = 8.0
@@ -527,7 +527,7 @@ class AudioOnlyRecorderService:
             snapshot = self.poller.get_snapshot()
         except Exception:
             return []
-        return list_teacher_audio_sources(snapshot)
+        return list_tingwu_audio_sources(snapshot)
 
     @staticmethod
     def _probe_timeout(stream_url: str, *, startup: bool) -> float:

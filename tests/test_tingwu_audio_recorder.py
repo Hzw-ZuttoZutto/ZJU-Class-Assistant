@@ -63,6 +63,7 @@ class _FakeSnapshot:
         self,
         url: str,
         *,
+        active_provider: str = "",
         stream_play: str = "",
         class_url: str = "",
         class_stream_play: str = "",
@@ -73,6 +74,7 @@ class _FakeSnapshot:
         if class_url or class_stream_play:
             streams["class"] = _FakeStream(class_url, stream_play=class_stream_play)
         self.streams = streams
+        self.active_provider = active_provider
 
 
 class _FakePoller:
@@ -80,11 +82,13 @@ class _FakePoller:
         self,
         url: str,
         *,
+        active_provider: str = "",
         stream_play: str = "",
         class_url: str = "",
         class_stream_play: str = "",
     ) -> None:
         self.url = url
+        self.active_provider = active_provider
         self.stream_play = stream_play
         self.class_url = class_url
         self.class_stream_play = class_stream_play
@@ -92,6 +96,7 @@ class _FakePoller:
     def get_snapshot(self):
         return _FakeSnapshot(
             self.url,
+            active_provider=self.active_provider,
             stream_play=self.stream_play,
             class_url=self.class_url,
             class_stream_play=self.class_stream_play,
@@ -126,6 +131,15 @@ class _TimeoutAwareBackend(_FakeBackend):
         if stream_url.startswith("webrtc://"):
             return timeout >= 8.5
         return bool(stream_url)
+
+
+class _HlsOnlyBackend(_FakeBackend):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def probe_audio(self, stream_url: str, *, timeout_sec: float = 4.0) -> bool:  # noqa: ARG002
+        self.calls.append(stream_url)
+        return stream_url.endswith(".m3u8")
 
 
 class TingwuAudioRecorderTests(unittest.TestCase):
@@ -201,6 +215,32 @@ class TingwuAudioRecorderTests(unittest.TestCase):
             self.assertEqual(err, "")
             self.assertGreaterEqual(len(backend.calls), 1)
             self.assertEqual(backend.calls[0], "webrtc://rtc.zju.edu.cn/live/teacher?vhost=video")
+
+    def test_startup_check_prefers_stable_hls_for_livingroom_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            backend = _HlsOnlyBackend()
+            service = AudioOnlyRecorderService(
+                poller=_FakePoller(
+                    "https://example.test/live.m3u8",
+                    active_provider="livingroom",
+                    stream_play="webrtc://rtc.zju.edu.cn/live/teacher?vhost=video",
+                ),
+                config=AudioRecordingConfig(poll_interval_sec=0.2, max_lag_sec=999.0),
+                session_meta=AudioSessionMeta(
+                    course_title="课程A",
+                    teacher_name="老师A",
+                    session_dir=root,
+                    started_at=datetime.now(timezone.utc),
+                ),
+                backend=backend,
+                log_fn=lambda _msg: None,
+            )
+            ok, err = service.startup_check(timeout_sec=1.0)
+            self.assertTrue(ok)
+            self.assertEqual(err, "")
+            self.assertGreaterEqual(len(backend.calls), 1)
+            self.assertEqual(backend.calls[0], "https://example.test/live.m3u8")
 
     def test_startup_check_falls_back_to_class_sources_after_teacher(self) -> None:
         with tempfile.TemporaryDirectory() as td:
