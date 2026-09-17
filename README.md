@@ -93,9 +93,13 @@ cp account.example .account
 | `OPENAI_API_KEY` 或 `AIHUBMIX_API_KEY` | 实时事件分析                                                                          |
 | `OPENAI_BASE_URL`                        | OpenAI 兼容网关地址，可选；使用官方 OpenAI Key 时通常留空                             |
 | `ZAI_API_KEY` / `GLM_API_KEY`          | 使用`glm-*` 模型时需要                                                              |
+| `QWEN_API_KEY` | 使用 `qwen*` 分析模型时优先读取；未配置时可复用 `DASHSCOPE_API_KEY` |
+| `QWEN_BASE_URL` | Qwen 分析接口，可选；默认 `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `DASHSCOPE_API_KEY`                      | DashScope 流式 ASR                                                                    |
 | `DINGTALK_WEBHOOK` / `DINGTALK_SECRET` | 钉钉机器人提醒；`analysis`、`auto-analysis` 和 stream `mic-listen` 当前要求启用 |
 | `ALIBABA_CLOUD_ACCESS_KEY_ID` 等         | 启用`--tingwu-enabled` 时需要                                                       |
+
+Qwen 分析可设置 `rt_model` 为 `qwen3.7-flash`，`rt_api_base_url` 为 `https://dashscope.aliyuncs.com/compatible-mode/v1`。通过 Chat Completions 请求 JSON 输出，并设置 `enable_thinking=false`。其他地域或自定义网关需填写对应地址和凭据；原配置残留的 AIHubMix 地址会在 Qwen 路由中被忽略。分析使用独立的 `QWEN_API_KEY` 时不会修改 ASR 密钥。
 
 不同场景的最小配置：
 

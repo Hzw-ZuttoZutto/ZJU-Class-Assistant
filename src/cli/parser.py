@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument(
         "--rt-model",
         default="gpt-4.1-mini",
-        help="OpenAI text model for realtime insight analysis",
+        help="Text model for realtime insight analysis (OpenAI, GLM, or Qwen)",
     )
     analysis.add_argument(
         "--rt-asr-scene",
@@ -294,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     mic_listen.add_argument(
         "--rt-model",
         default="gpt-4.1-mini",
-        help="OpenAI text model for realtime insight analysis",
+        help="Text model for realtime insight analysis (OpenAI, GLM, or Qwen)",
     )
     mic_listen.add_argument(
         "--rt-stt-model",

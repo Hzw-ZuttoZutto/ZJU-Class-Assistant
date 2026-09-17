@@ -209,7 +209,7 @@ class OpenAIInsightClient:
     def _create_analysis_response(self, payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         request = dict(payload)
         normalized_model = _normalize_model_name(str(request.get("model", "")))
-        if not _is_glm_family(normalized_model):
+        if not (_is_glm_family(normalized_model) or _is_qwen_family(normalized_model)):
             request["temperature"] = 0
         removed: set[str] = set()
         value_adjusted: set[str] = set()
@@ -243,7 +243,7 @@ class OpenAIInsightClient:
         return self._invoke_analysis_endpoint(request=request, model_name=normalized_model), dict(request)
 
     def _invoke_analysis_endpoint(self, *, request: dict[str, Any], model_name: str) -> Any:
-        if _is_glm_family(model_name):
+        if _is_glm_family(model_name) or _is_qwen_family(model_name):
             return self.client.chat.completions.create(**request)
         return self.client.responses.create(**request)
 
@@ -566,7 +566,7 @@ def _build_analysis_request_payload(
     timeout_sec: float,
 ) -> dict[str, Any]:
     normalized_model = _normalize_model_name(analysis_model)
-    if _is_glm_family(normalized_model):
+    if _is_glm_family(normalized_model) or _is_qwen_family(normalized_model):
         return {
             "model": analysis_model,
             "messages": [
@@ -577,7 +577,11 @@ def _build_analysis_request_payload(
             "max_tokens": 1200,
             "timeout": max(1.0, float(timeout_sec)),
             "temperature": 0.1,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "extra_body": (
+                {"enable_thinking": False}
+                if _is_qwen_family(normalized_model)
+                else {"thinking": {"type": "disabled"}}
+            ),
         }
 
     request_payload: dict[str, Any] = {
@@ -621,6 +625,10 @@ def _is_gpt41_family(model: str) -> bool:
 
 def _is_glm_family(model: str) -> bool:
     return model.startswith("glm-")
+
+
+def _is_qwen_family(model: str) -> bool:
+    return model.startswith("qwen")
 
 
 def _apply_unsupported_value_fallback(*, request: dict[str, Any], exc: Exception) -> tuple[dict[str, Any] | None, str]:

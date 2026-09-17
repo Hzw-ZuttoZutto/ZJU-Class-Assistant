@@ -9,6 +9,7 @@ _DEFAULT_OPENAI_BASE_ENV = "OPENAI_BASE_URL"
 _DEFAULT_GLM_API_ENV = "ZAI_API_KEY"
 _DEFAULT_GLM_BASE_ENV = "GLM_BASE_URL"
 _GLM_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
+_QWEN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 def workspace_root() -> Path:
@@ -76,6 +77,26 @@ def resolve_openai_client_settings(
         except OSError as exc:
             account_read_error = f"failed to read account file {account_file}: {exc}"
 
+    if provider == "qwen":
+        api_env = "QWEN_API_KEY" if resolved_api_env.upper() == _DEFAULT_OPENAI_API_ENV else resolved_api_env
+        base_env = "QWEN_BASE_URL" if resolved_base_env.upper() == _DEFAULT_OPENAI_BASE_ENV else resolved_base_env
+        key = _resolve_named_setting(
+            account_entries=account_entries,
+            account_candidates=[api_env.lower(), "qwen_api_key", "dashscope_api_key"],
+            env_candidates=[api_env, "QWEN_API_KEY", "DASHSCOPE_API_KEY"],
+        )
+        base_url = _resolve_named_setting(
+            account_entries=account_entries,
+            account_candidates=[base_env.lower(), "qwen_base_url"],
+            env_candidates=[base_env, "QWEN_BASE_URL"],
+        )
+        if not key:
+            return "", "", account_read_error or (
+                f"missing Qwen API key: set {api_env} / QWEN_API_KEY / DASHSCOPE_API_KEY "
+                f"in {account_file} or the environment"
+            )
+        return key, base_url or _QWEN_DEFAULT_BASE_URL, ""
+
     if provider == "glm":
         glm_api_env = _resolve_glm_api_env_name(resolved_api_env)
         glm_base_env = _resolve_glm_base_env_name(resolved_base_env)
@@ -137,6 +158,8 @@ def resolve_effective_llm_base_url(
         # to the wrong provider. Auto-ignore it and fall back to resolved GLM URL.
         if provider == "glm" and _is_aihubmix_base_url(explicit):
             return resolved
+        if provider == "qwen" and _is_aihubmix_base_url(explicit):
+            return resolved
         return explicit
     return resolved
 
@@ -145,6 +168,8 @@ def _resolve_llm_provider_from_model(model_name: str) -> str:
     normalized = str(model_name or "").strip().lower()
     if normalized.startswith("glm-"):
         return "glm"
+    if normalized.startswith("qwen"):
+        return "qwen"
     return "openai"
 
 
