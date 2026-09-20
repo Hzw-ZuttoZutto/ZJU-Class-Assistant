@@ -170,13 +170,17 @@ class WebRTCAudioPullSession:
         shutdown_event = asyncio.Event()
         self._shutdown_event = shutdown_event
         audio_task = None
+        discard_tasks: list[asyncio.Task] = []
 
         @pc.on("track")
         def on_track(track) -> None:
             nonlocal audio_task
-            if getattr(track, "kind", "") != "audio" or audio_task is not None:
+            if getattr(track, "kind", "") == "audio" and audio_task is None:
+                audio_task = asyncio.create_task(self._consume_audio_track(track, shutdown_event))
                 return
-            audio_task = asyncio.create_task(self._consume_audio_track(track, shutdown_event))
+            # aiortc uses an unbounded queue for an unconsumed RemoteStreamTrack.
+            # Drain unexpected video tracks so decoded frames cannot accumulate.
+            discard_tasks.append(asyncio.create_task(self._discard_track(track)))
 
         @pc.on("connectionstatechange")
         def on_connectionstatechange() -> None:
@@ -186,7 +190,6 @@ class WebRTCAudioPullSession:
                 shutdown_event.set()
 
         pc.addTransceiver("audio", direction="recvonly")
-        pc.addTransceiver("video", direction="recvonly")
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -212,12 +215,24 @@ class WebRTCAudioPullSession:
             while not self._stop_event.is_set() and not shutdown_event.is_set():
                 await asyncio.sleep(0.2)
         finally:
-            if audio_task is not None:
-                audio_task.cancel()
+            tasks = [task for task in [audio_task, *discard_tasks] if task is not None]
+            for task in tasks:
+                task.cancel()
+            if tasks:
                 with suppress(asyncio.CancelledError, Exception):
-                    await audio_task
+                    await asyncio.gather(*tasks, return_exceptions=True)
             with suppress(Exception):
                 await pc.close()
+
+    async def _discard_track(self, track) -> None:
+        """Consume non-audio tracks so aiortc cannot grow its receive queue."""
+        try:
+            while not self._stop_event.is_set():
+                await track.recv()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
 
     async def _consume_audio_track(self, track, shutdown_event) -> None:
         try:
