@@ -14,9 +14,9 @@ SYSTEM_PROMPT_LEGACY_PLACEHOLDER = "{current_segment_ref}"
 
 _DEFAULT_SYSTEM_PROMPT_FALLBACK = (
     "你是课堂实时紧急事项提炼助手。"
+    "输出必须是严格 JSON 对象，不得输出任何额外文本。"
     f"任务是基于“{SYSTEM_PROMPT_PLACEHOLDER}”和“最近历史上下文”，判断当前是否出现需要学生立即关注的课堂事项，"
     "并把结果整理成适合告警阅读的动作化 JSON。"
-    "输出必须是严格 JSON 对象，不得输出任何额外文本。"
 )
 _DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[3] / "config" / "realtime_system_prompt.txt"
 
@@ -86,7 +86,7 @@ def build_system_prompt(chunk_seconds: float | None, *, template: str | None = N
         .strip()
     )
     if current_segment_ref not in prompt:
-        return f"主判定对象：{current_segment_ref}。\n{prompt}"
+        return f"{prompt}\n主判定对象：{current_segment_ref}。"
     return prompt
 
 

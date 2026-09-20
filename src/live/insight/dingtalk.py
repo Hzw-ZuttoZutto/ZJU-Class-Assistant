@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote_plus
 
+from src.common.dingtalk import redact_dingtalk_error
 from src.common.http import get_thread_session
 from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.models import InsightEvent
@@ -243,7 +244,7 @@ class DingTalkNotifier:
                 )
                 return
             except Exception as exc:
-                last_error = str(exc)
+                last_error = redact_dingtalk_error(exc)
                 if attempt >= self.send_retry_count:
                     break
                 delay_sec = min(16.0, float(2 ** (attempt - 1)))

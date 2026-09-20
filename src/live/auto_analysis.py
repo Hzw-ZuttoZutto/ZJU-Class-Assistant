@@ -31,6 +31,7 @@ from src.common.billing import (
 )
 from src.common.course_meta import course_teachers, query_course_detail
 from src.common.http import create_session, get_thread_session
+from src.common.dingtalk import redact_dingtalk_error
 from src.common.rotating_log import RotatingLineWriter
 from src.live.analysis import _validate_analysis_args
 from src.live.tingwu import run_tingwu_remote_preflight, validate_tingwu_local_requirements
@@ -346,7 +347,7 @@ class DingTalkMarkdownSender:
                     )
                 return True, ""
             except Exception as exc:
-                last_error = str(exc)
+                last_error = redact_dingtalk_error(exc)
                 if attempt >= self.retry_count:
                     break
                 time.sleep(min(4.0, 0.5 * attempt))
